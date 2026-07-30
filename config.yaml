@@ -1,0 +1,114 @@
+# ──────────────────────────────────────────────────────────────
+# Sack Counter v18 — YAML Configuration
+# Edit this file to tune the system without touching code.
+# ──────────────────────────────────────────────────────────────
+
+# ── Model ─────────────────────────────────────────────────────
+model_path: "best.pt"        # 0=person  1=sack  2=box
+
+# Exit mode uses a SEPARATE model trained specifically on ground-lying/
+# piled sacks (the entry model above was trained mostly on carried
+# sacks and performed poorly on exit footage — confirmed median
+# confidence ~0.10 on ground-lying sacks).  Leave commented out / null
+# to fall back to model_path above.
+exit_model_path: "exit_best.pt"
+
+# ── Detection confidence thresholds ───────────────────────────
+conf_sack:   0.35
+conf_person: 0.55
+conf_box:    0.45
+
+# ── Track lifetime ────────────────────────────────────────────
+confirm_secs:  0.4    # frames before a track is "confirmed"
+miss_secs:     1.5    # frames before a lost track is discarded
+occlusion_secs: 0.5   # ghost-sack duration during occlusion
+
+# ── Motion / still detection ──────────────────────────────────
+still_window:        10
+still_thresh_ratio:  0.02
+still_speed_thresh:  1.5
+still_speed_window:  8
+still_suppress_secs: 1.5   # seconds still before classified as ground sack
+
+# ── Association weights (must sum to 1.0) ─────────────────────
+w_distance:   0.35
+w_overlap:    0.25
+w_height:     0.20
+w_appearance: 0.20
+
+# ── Association limits ────────────────────────────────────────
+carry_zone_top:    -1.5
+carry_zone_bot:     0.6
+max_assoc_dist:    300
+id_jump_ratio:     0.25
+min_assoc_score:   0.05
+max_sacks_per_person: 8
+
+# ── ReID ──────────────────────────────────────────────────────
+reid_memory_secs:  3.0
+reid_threshold:    0.72
+reid_w_position:   0.25
+reid_w_velocity:   0.15
+reid_w_bbox_size:  0.10
+reid_w_appearance: 0.50     # dominant
+
+# ── Ownership hysteresis ──────────────────────────────────────
+ownership_switch_margin: 0.15
+
+
+# ── Peak-count gate fix ───────────────────────────────────────
+peak_count_enabled:    true
+peak_window_px:        350   # approach window width
+peak_freeze_px:        40    # freeze zone near gate B
+peak_min_assoc_score:  0.55
+peak_conf_sack_floor:  0.55
+
+# ── Lift guard ────────────────────────────────────────────────
+lift_owner_stable_frames: 6  # min frames same owner before pickup accepted
+
+# ── Confidence scoring ────────────────────────────────────────
+conf_weight_detection:  0.30
+conf_weight_tracking:   0.30
+conf_weight_ownership:  0.25
+conf_weight_crossing:   0.15
+min_delivery_confidence: 0.55
+ownership_anomaly_threshold: 0.50
+conf_class_high:   0.80
+conf_class_medium: 0.60
+
+# ── Door zone (v21) ──────────────────────────────────────────
+door_polygon_points:       null       # set by calibration
+door_disappear_frames:     15
+door_entry_proximity_px:   60    # FIX-D: px from polygon plane to also trigger DOOR-ENTER
+direction_lookback_frames: 8
+min_convergence_px:        20
+reentry_margin_px:         50
+door_approach_side:        right
+door_cross_threshold_px:   30
+
+# ── Exit counter (v23) ─────────────────────────────────────────
+landing_zone_points:           null  # set by exit-mode calibration
+exit_confirm_timeout_frames:   45    # frames to wait for landing confirmation
+                                      # before cancelling a tentative crossing
+exit_still_frames:             8     # frames a sack must stay stationary
+                                      # in the landing zone to be "landed"
+exit_landing_miss_grace_frames: 5    # frames a sack may be briefly
+                                      # undetected (YOLO occlusion/flicker
+                                      # in a crowded pile) before its
+                                      # still-streak progress is reset
+exit_dedup_radius_px:          35    # max pixel distance for a new sack
+                                      # ID to be treated as the SAME
+                                      # physical sack re-detected (fixes
+                                      # a long-stationary sack getting
+                                      # counted 2-3x as its track ID
+                                      # churns from confidence flicker)
+exit_dedup_recency_window:     20    # max frames since an old landed
+                                      # sack's ID went quiet for a new ID
+                                      # at the same spot to still count
+                                      # as "probably the same sack"
+exit_landing_jitter_tolerance:  2    # consecutive non-still readings
+                                      # (while still detected) allowed
+                                      # before a full still-streak reset.
+                                      # Fixes some sacks taking much
+                                      # longer to count than others due
+                                      # to sub-pixel detection jitter.

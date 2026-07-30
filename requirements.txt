@@ -1,0 +1,18 @@
+# Sack Counter v18 — Python dependencies
+# Tested with Python 3.10+
+
+# Computer vision & YOLO
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+
+# Deep learning / embedder
+torch>=2.0.0
+torchvision>=0.15.0
+Pillow>=9.5.0
+
+# Numerical / optimisation
+numpy>=1.24.0
+scipy>=1.10.0
+
+# YAML config support (optional but recommended)
+pyyaml>=6.0
