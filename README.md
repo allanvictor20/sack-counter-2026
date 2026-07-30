@@ -1,152 +1,144 @@
-# Sack Counter v18
 
-Real-time computer vision system for counting sacks and boxes delivered per person,
-using YOLOv8 detection, deep ReID tracking, Hungarian algorithm assignment, and a
-two-line gate counter.
 
-## What's new in v18
+```markdown
+# Sack Counter AI
 
-### Architecture overhaul
-The original 1,215-line `main.py` has been refactored into a clean `pipeline/` sub-package:
+An automated Computer Vision pipeline for real-time detection, tracking, door-crossing analysis, and exit monitoring of sacks/bags passing through checkpoints or doorways.
+
+---
+
+## Overview
+
+**Sack Counter AI** provides a high-assurance tracking and analytics system designed to monitor and count sacks in warehouse or logistics environments. The system processes video streams to track workers, detect carried or transported sacks, define virtual landing zones and door polygons, and accurately register crossing events to prevent double-counting.
+
+---
+
+## Key Features
+
+- **Multi-Object Tracking & Pipeline Orchestration:** Separate, specialized tracking modules for persons and sacks (`person_tracker.py`, `sack_tracker.py`).
+- **Door Polygon & Landing Zone Analysis:** Custom geometry configuration (`door_polygon.py`, `landing_zone.py`) to monitor specific checkpoint boundaries and entry/exit vectors.
+- **Crossing & Exit Detection:** State-machine-based crossing logic (`door_crossing.py`, `exit_crossing.py`, `state_machine.py`) ensuring reliable event registration.
+- **Ground Memory & Re-identification:** Built-in ground memory tracking (`ground_memory.py`) and feature embedding (`embedder.py`) to reduce false positive counts.
+- **Analytics & Diagnostic Reporting:** Real-time logging (`logger.py`), exit reporting (`exit_reporter.py`), and diagnostic tooling (`diagnose_sacks.py`).
+
+---
+
+## Directory Structure
+
+```text
+sack-counter-2026/
+├── config.yaml               # System parameters, threshold, and camera configs
+├── requirements.txt          # Python dependencies
+├── run.py                    # Application entry point
+├── diagnose_sacks.py         # Utility script for diagnostics and debugging
+├── sack_counter/
+│   ├── main.py               # Main pipeline execution script
+│   ├── config.py             # Configuration loader
+│   ├── embedder.py           # Feature embeddings generator
+│   ├── trackers.py           # Core tracking abstractions
+│   ├── pipeline/             # Pipeline components
+│   │   ├── orchestrator.py   # Main pipeline orchestrator
+│   │   ├── person_tracker.py # Person detection and tracking
+│   │   ├── sack_tracker.py   # Sack detection and tracking
+│   │   ├── door_crossing.py  # Door line/polygon crossing detection
+│   │   ├── counting.py       # Tallying and counting logic
+│   │   ├── state_machine.py  # Pipeline state transitions
+│   │   ├── ground_memory.py # Spatial memory tracking
+│   │   └── analytics.py      # Metric gathering and logging
+│   └── exit/                 # Dedicated exit sub-pipeline
+│       ├── exit_main.py      # Exit monitoring runner
+│       ├── exit_tracker.py   # Exit zone tracking
+│       ├── exit_crossing.py  # Exit boundary crossing detection
+│       └── landing_zone.py   # Landing zone spatial logic
+└── tests/                    # Pytest test suite
+    ├── exit/                 # Exit pipeline tests
+    └── test_*.py             # Unit and integration tests
 
 ```
-sack_counter/
-├── pipeline/
-│   ├── state_machine.py   # Per-sack lifecycle: DETECTED → CARRIED → DELIVERED
-│   ├── analytics.py       # Per-worker stats, throughput, minute-by-minute trends
-│   ├── ground_memory.py   # Memory of sacks already on the floor
-│   └── orchestrator.py    # PipelineSession — owns all components
-├── main.py                # Loop only (~350 lines, down from 1,215)
-├── config.py              # YAML + JSON config loading
-├── logger.py              # Structured logging (DEBUG/INFO/WARNING/ERROR)
-└── ...                    # (all v17 modules unchanged)
-```
 
-### Sack state machine
-Each tracked sack now has an explicit lifecycle:
-```
-ON_GROUND → DETECTED → CONFIRMED → PICKED_UP → CARRIED → APPROACHING → DELIVERED
-```
-Invalid transitions are rejected, making behaviour predictable and debuggable.
-
-### Ground-object memory (`GroundMemory`)
-Sacks already resting on the floor are now remembered across frames.
-A pickup is only confirmed after `lift_owner_stable_frames` consecutive moving frames,
-preventing a passing carrier from accidentally triggering a floor sack count.
-
-### Analytics engine (`AnalyticsEngine`)
-Every delivery session now produces:
-- Deliveries per worker
-- Average load size per carrier
-- Peak throughput (items / minute)
-- Minute-by-minute trend buckets
-- Ownership confidence statistics
-
-These are written to `delivery_log_v18.json` under the `"analytics"` key.
-
-### YAML configuration
-```yaml
-# config.yaml (auto-loaded from current directory)
-conf_sack: 0.35
-peak_window_px: 350
-gate_gap_px: 40
-```
-Run `python run.py video.mp4` — `config.yaml` is picked up automatically.
-Pass `--config path/to/other.yaml` to override.
-
-### Structured logging
-```
-INFO    — deliveries, gate crossings, re-entry events
-WARNING — low ownership confidence anomalies
-DEBUG   — frame-by-frame assignment / stamp / peak details (file only)
-```
-Console shows WARNING+ only; full detail goes to `sack_counter_v18.log`.
-
-### Type hints and docstrings
-Every public function and class now has full type annotations and docstrings.
-
-### Unit tests
-```
-tests/
-├── test_assignment.py     # association_score, carry_zone_bounds, hungarian
-├── test_confidence.py     # ConfidenceTracker, confidence_class
-├── test_state_machine.py  # SackStateMachineRegistry transitions
-├── test_analytics.py      # AnalyticsEngine per-worker stats
-├── test_ground_memory.py  # GroundMemory pickup detection
-└── test_counting.py       # GateCounter, config loader
-```
-
-Run all tests:
-```bash
-python -m pytest tests/ -v
-# or without pytest:
-python -m unittest discover tests/
-```
+---
 
 ## Installation
 
+### 1. Prerequisites
+
+* **Python 3.12+**
+* `pip` package manager
+* (Optional) CUDA-enabled GPU for accelerated inference
+
+### 2. Setup Virtual Environment
+
+```bash
+python -m venv venv
+
+# On Linux / macOS:
+source venv/bin/activate
+
+# On Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+
+```
+
+### 3. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
+
 ```
+
+---
 
 ## Usage
 
+### Configuration
+
+Adjust parameters such as confidence thresholds, model paths, door polygon coordinates, and video input paths in `config.yaml`.
+
+### Running the Main Counter
+
+To execute the main counting pipeline:
+
 ```bash
-# Basic
-python run.py video.mp4
-
-# With YAML config
-python run.py video.mp4 --config config.yaml
-
-# Save output video, no display
-python run.py video.mp4 --save --headless
-
-# Override gate position and confidence
-python run.py video.mp4 --gate-x 640 --conf-sack 0.40
-```
-
-## Project structure
+python run.py
 
 ```
-sack_counter_v18/
-├── config.yaml              ← tune parameters without touching code
-├── requirements.txt
-├── run.py                   ← CLI entry point
-├── sack_counter/
-│   ├── __init__.py
-│   ├── main.py              ← processing loop (~350 lines)
-│   ├── config.py            ← YAML/JSON loader
-│   ├── logger.py            ← structured logging
-│   ├── assignment.py        ← Hungarian assignment
-│   ├── confidence.py        ← delivery confidence scoring
-│   ├── trackers.py          ← motion/ReID/ownership/ghost trackers
-│   ├── gate.py              ← two-line gate counter
-│   ├── embedder.py          ← MobileNetV3 deep embedder
-│   ├── drawing.py           ← OpenCV overlay rendering
-│   ├── box_pipeline.py      ← box counting sub-pipeline
-│   ├── colors.py            ← colour palette
-│   └── pipeline/
-│       ├── __init__.py
-│       ├── state_machine.py
-│       ├── analytics.py
-│       ├── ground_memory.py
-│       └── orchestrator.py
-└── tests/
-    ├── test_assignment.py
-    ├── test_confidence.py
-    ├── test_state_machine.py
-    ├── test_analytics.py
-    ├── test_ground_memory.py
-    └── test_counting.py
+
+Or run directly via the package:
+
+```bash
+python -m sack_counter.main
+
 ```
 
-## All v17 bug fixes retained
+### Running Diagnostics
 
-- FIX-UNICODE: UTF-8 stdout/stderr on Windows
-- FIX-REENTRY: persons_past_gate cleared on re-entry
-- FIX-STAMP: sack_carrier_stamp cleared on re-entry
-- FIX-TTL: orphaned-peak TTL = miss_frames
-- FIX-PEAK0: explicit INFO log for every peak=0 crossing
-- FIX 1–3b: ownership eviction on timeout / position / gate crossing
-- BUG1-A/B: just_evicted_sacks / sack_carrier_stamp guards
-- BUG2: orphaned_peaks registry for late-crossing sacks
+If you need to analyze video clips or troubleshoot detection issues:
+
+```bash
+python diagnose_sacks.py --input path/to/video.mp4
+
+```
+
+---
+
+## Testing
+
+The project includes a comprehensive test suite built with `pytest` covering pipeline states, assignment logic, door crossing, and exit tracking.
+
+Run the test suite with:
+
+```bash
+pytest
+
+```
+
+To run test coverage on specific modules:
+
+```bash
+pytest tests/exit/
+
+```
+
+```
+
+```
