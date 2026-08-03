@@ -215,6 +215,19 @@ def timeout_persons(
                 pid, len(evicted), evicted, fn,
             )
 
+        # DEBUG: report the best door-normal projection this carrier ever
+        # reached before timing out, so a failed delivery tells us how
+        # close it got instead of just "never crossed". Best-effort only —
+        # never allowed to affect real timeout logic.
+        try:
+            best = session.__dict__.get("debug_best_proj", {}).pop(pid, None)
+            if best is not None:
+                threshold = session.__dict__.get("debug_threshold")
+                print(f"[DOOR CHECK] P#{pid} timed out — best projection "
+                      f"ever reached: {best:.1f}  (threshold={threshold})")
+        except Exception:
+            pass
+
         # v22: clean up door tracking histories to prevent memory leaks
         from .door_crossing import cleanup_door_histories
         cleanup_door_histories(pid, state)

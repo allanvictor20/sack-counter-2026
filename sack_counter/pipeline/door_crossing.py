@@ -80,6 +80,10 @@ def update_door_zone(
     logger = session.logger
 
     threshold = cfg.get("door_cross_threshold_px", 30)
+    try:
+        session.__dict__["debug_threshold"] = threshold
+    except Exception:
+        pass
 
     # Get all confirmed non-ground sacks this frame
     confirmed_sack_list = [
@@ -122,8 +126,11 @@ def update_door_zone(
         crossed = False
         crossing_sid = None
         crossing_proj = 0.0
+        frame_max_proj = None
         for (sid, x1, y1, x2, y2, scx, scy, sc) in carrier_sacks:
             proj = door.project_onto_normal(scx, scy)
+            if frame_max_proj is None or proj > frame_max_proj:
+                frame_max_proj = proj
             if proj >= threshold:
                 crossed = True
                 crossing_sid = sid
@@ -133,6 +140,21 @@ def update_door_zone(
                     sid, proj, pid, fn,
                 )
                 break
+
+        # DEBUG: track the best (highest) projection ever seen for this
+        # carrier, so a failed delivery tells us how close it got instead
+        # of just "never crossed". Stored on `session` (not `state`),
+        # since PipelineState only accepts its predeclared fields.
+        # Wrapped in try/except so this instrumentation can never affect
+        # real counting logic or break on mocked sessions in tests.
+        if frame_max_proj is not None:
+            try:
+                store = session.__dict__.setdefault("debug_best_proj", {})
+                prev_best = store.get(pid)
+                if prev_best is None or frame_max_proj > prev_best:
+                    store[pid] = frame_max_proj
+            except Exception:
+                pass
 
         if not crossed:
             continue

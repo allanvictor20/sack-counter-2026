@@ -91,9 +91,11 @@ reentry_margin_px:         50
 reentry_grace_frames:      5     # frames after a commit during which
                                  # re-entry cannot reset a carrier
 door_approach_side:        right
-door_cross_threshold_px:   30    # SIGNED projection past the door plane.
-                                 # Positive = room side; a sack on the
-                                 # corridor side never counts as crossed.
+door_cross_threshold_px:   5     # SIGNED projection past the door plane.
+                                 # Lowered from 30: carriers were getting
+                                 # occluded mid-doorway around proj≈15-18
+                                 # before reaching 30, so no crossing was
+                                 # ever registered while still tracked.
 
 # ── Exit counter (v23) ─────────────────────────────────────────
 landing_zone_points:           null  # set by exit-mode calibration

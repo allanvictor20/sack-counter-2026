@@ -134,6 +134,17 @@ def run(
     state  = session.state
     logger = session.logger
 
+    # DEBUG: sanity-check door orientation before running.
+    print(f"[DOOR CHECK] room_point={door.room_point}  "
+          f"normal_vec={door.normal_vec}")
+    print(f"[DOOR CHECK] corridor_midpt={door.corridor_midpt}  "
+          f"room_midpt={door.room_midpt}")
+    if door.room_point is None:
+        print("[DOOR CHECK] WARNING: room_point is None — normal_vec "
+              "orientation is a guess (axes[1], arbitrary sign). "
+              "Re-calibrate interactively and confirm door_room_point "
+              "is saved to config.yaml.")
+
     print(f"  Source FPS       : {src_fps:.1f}")
     print(f"  Confirm after    : {session.confirm_frames} frames")
     print(f"  Miss timeout     : {session.miss_frames} frames")
@@ -326,23 +337,29 @@ def run(
 
         
         # ── 8. Peak state cleanup (persons long past door) ────
-        # Iterates person_peak_count, not person_peak_used.  Nothing has
-        # ever set person_peak_used to True, so this loop was walking a
-        # permanently empty dict and no peak state was ever reclaimed for
-        # a carrier who drifted well past the door.
+        # FIX: this used to compare raw pid_cx against door_cx using a
+        # left/right heuristic (door_approach_side) — leftover from
+        # before the v22 normal-vector rewrite. Every other geometry
+        # check in the pipeline (crossing, window, direction) uses
+        # door.project_onto_normal(); this one didn't, so for any door
+        # that isn't near-perfectly horizontal/vertical the threshold
+        # didn't correspond to the real corridor/room boundary, and could
+        # wipe person_peak_count for a carrier who was still mid-approach
+        # (this loop had no persons_past_door guard at all).
         if cfg.get("peak_count_enabled", True):
-            door_cx = session.door.centroid[0]
-            approach_side = cfg.get("door_approach_side", "right")
+            stale_margin = cfg["peak_freeze_px"] * 2
             for pid in list(state["person_peak_count"].keys()):
+                if pid not in state["persons_past_door"]:
+                    continue
                 pid_cx = state["person_prev_cx"].get(pid)
-                if pid_cx is not None:
-                    if approach_side == "right":
-                        stale = pid_cx < door_cx - cfg["peak_freeze_px"] * 2
-                    else:
-                        stale = pid_cx > door_cx + cfg["peak_freeze_px"] * 2
-                    if stale:
-                        state["person_peak_count"].pop(pid, None)
-                        state["person_approach_fn"].pop(pid, None)
+                if pid_cx is None:
+                    continue
+                pid_cy = state["person_boxes"].get(pid)
+                cy_val = ((pid_cy[1] + pid_cy[3]) // 2) if pid_cy else 0
+                proj = session.door.project_onto_normal(pid_cx, cy_val)
+                if proj > stale_margin:
+                    state["person_peak_count"].pop(pid, None)
+                    state["person_approach_fn"].pop(pid, None)
 
         # ── 9. Expire stale orphaned peaks (BUG2) ─────────────
         expired = [pid for pid, rec in state["orphaned_peaks"].items()
@@ -489,13 +506,24 @@ def _draw_frame(
         if box_obj is None or pid in state["persons_past_door"]:
             continue
         can = relinker.canonical(pid)
+        cs_val = state["person_load"].get(can, 0)
+        cb_val = sum(1 for b, owner in box_owner.items() if owner == can)
+        ds_val = len(state["person_sack_delivered"].get(can, set()))
+        db_val = box_del_counts.get(can, 0)
+        # Only draw a box around people who are actually carrying
+        # something (a currently-held sack/box) or have delivered one
+        # this session. Bystanders with nothing stamped to them are
+        # skipped so the overlay isn't cluttered with empty-handed
+        # people walking through the frame.
+        if cs_val == 0 and cb_val == 0 and ds_val == 0 and db_val == 0:
+            continue
         draw_person_box(
             frame, box_obj, pid, can,
-            cs=state["person_load"].get(can, 0),
-            ds=len(state["person_sack_delivered"].get(can, set())),
-            cb=sum(1 for b, owner in box_owner.items() if owner == can),
-            db=box_del_counts.get(can, 0),
-            delivered=len(state["person_sack_delivered"].get(can, set())) > 0,
+            cs=cs_val,
+            ds=ds_val,
+            cb=cb_val,
+            db=db_val,
+            delivered=ds_val > 0,
             relinked=can != pid,
         )
 

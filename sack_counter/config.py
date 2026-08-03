@@ -65,7 +65,7 @@ DEFAULT_CFG: dict[str, Any] = {
     "reentry_margin_px":          50,
     "reentry_grace_frames":       5,        # frames after a commit during
                                             # which re-entry cannot reset
-    "door_cross_threshold_px":    30,       # signed projection past the door
+    "door_cross_threshold_px":    5,        # signed projection past the door
                                             # plane that counts as "crossed"
     "door_approach_side":         "right",
     "polygon_padding_px":         0,        # optional padding around polygon
