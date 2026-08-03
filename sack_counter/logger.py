@@ -15,7 +15,7 @@ from pathlib import Path
 
 def setup_logger(
     name:       str  = "sack_counter",
-    log_path:   str  = "sack_counter_v20.log",
+    log_path:   str  = "sack_counter.log",
     file_level: int  = logging.DEBUG,
     console_level: int = logging.WARNING,
 ) -> logging.Logger:

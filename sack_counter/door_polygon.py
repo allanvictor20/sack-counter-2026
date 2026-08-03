@@ -99,7 +99,10 @@ class DoorPolygon:
                 "Door polygon is not convex after hull computation. "
                 "Please re-draw the door."
             )
-        self.points = [tuple(p.astype(int)) for p in hull_pts]
+        # Plain ints, not numpy int32: these get written to the calibration
+        # sidecar, and numpy scalars serialise as opaque !!python/object
+        # tags that yaml.safe_load then refuses to read back.
+        self.points = [(int(p[0]), int(p[1])) for p in hull_pts]
         self.np_points = np.array(self.points, dtype=np.int32).reshape(-1, 1, 2)
 
         xs = [p[0] for p in self.points]
@@ -111,25 +114,36 @@ class DoorPolygon:
 
         # ── Compute normal vector ─────────────────────────────
         # The normal points from corridor → room.
-        # Initially we pick an arbitrary direction (top-edge normal),
-        # then flip it using room_point if provided.
-        p0 = np.array(self.points[0], dtype=float)
-        p1 = np.array(self.points[1], dtype=float)
-        edge_vec = p1 - p0
-        # Perpendicular (rotate 90° clockwise)
-        raw_normal = np.array([edge_vec[1], -edge_vec[0]], dtype=float)
-        norm_len = np.linalg.norm(raw_normal)
-        if norm_len < 1e-6:
-            raw_normal = np.array([0.0, -1.0])
-        else:
-            raw_normal /= norm_len
-
+        #
+        # This used to take the perpendicular of the p0→p1 edge and then
+        # flip its SIGN using room_point.  Flipping a sign cannot fix a
+        # wrong AXIS: p0→p1 is whichever edge cv2.convexHull happened to
+        # order first, so for a portrait doorway (taller than it is wide)
+        # the normal came out vertical when the room was to the side —
+        # 90° wrong, which silently measured every crossing, projection
+        # and approach-window test along the wrong axis.  Every existing
+        # test used a SQUARE polygon, where the two axes are equivalent,
+        # so nothing caught it.
+        #
+        # The axes now come from the polygon's minimum-area rectangle, and
+        # room_point selects among all four candidate directions at once
+        # (both axes, both signs) rather than only correcting the sign.
         cx, cy = self.centroid
+        axes = self._rect_axes(pts)
+
         if self.room_point is not None:
             rx, ry = self.room_point
             to_room = np.array([rx - cx, ry - cy], dtype=float)
-            if np.dot(raw_normal, to_room) < 0:
-                raw_normal = -raw_normal
+            if np.linalg.norm(to_room) < 1e-6:
+                raw_normal = axes[0]
+            else:
+                to_room = to_room / np.linalg.norm(to_room)
+                candidates = [a for axis in axes for a in (axis, -axis)]
+                raw_normal = max(candidates, key=lambda a: float(np.dot(a, to_room)))
+        else:
+            # No room hint: assume the door's LONG side is its plane, so
+            # the normal is the short axis.  axes[1] is the shorter one.
+            raw_normal = axes[1]
 
         self.normal_vec = tuple(raw_normal.tolist())
 
@@ -146,6 +160,37 @@ class DoorPolygon:
 
         # Backward-compat alias
         self.approach_vec = (-raw_normal[0], -raw_normal[1])
+
+    # ── Geometry helpers ──────────────────────────────────────
+
+    @staticmethod
+    def _rect_axes(pts: np.ndarray) -> list:
+        """
+        Return the polygon's two unit axes, LONGEST first.
+
+        Uses the minimum-area rectangle rather than an arbitrary polygon
+        edge, so the axes describe the shape's real orientation even when
+        the corners were clicked in an odd order or the doorway is drawn
+        at an angle.
+
+        Args:
+            pts: (N, 2) float32 array of polygon corners.
+
+        Returns:
+            ``[long_axis, short_axis]`` as unit numpy vectors.  Falls back
+            to the image axes if the rectangle is degenerate.
+        """
+        rect = cv2.minAreaRect(pts.reshape(-1, 1, 2))
+        box  = cv2.boxPoints(rect).astype(float)
+
+        e1 = box[1] - box[0]
+        e2 = box[3] - box[0]
+        len1, len2 = float(np.linalg.norm(e1)), float(np.linalg.norm(e2))
+        if len1 < 1e-6 or len2 < 1e-6:
+            return [np.array([1.0, 0.0]), np.array([0.0, 1.0])]
+
+        u1, u2 = e1 / len1, e2 / len2
+        return [u1, u2] if len1 >= len2 else [u2, u1]
 
     # ── Geometry queries ──────────────────────────────────────
 

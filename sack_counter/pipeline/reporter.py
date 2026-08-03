@@ -10,12 +10,30 @@ from __future__ import annotations
 
 import time
 
+from ..version import VERSION_TAG as _VERSION_TAG
 from ..box_pipeline import BoxCountingPipeline
 from ..trackers import IdentityRelinker
 
 
 def _hr(char: str = "─", width: int = 62) -> str:
     return char * width
+
+
+def _int_keyed(workers: dict) -> dict:
+    """
+    Return *workers* re-keyed by int person ID.
+
+    Accepts both a live ``AnalyticsEngine.summary()`` (int keys) and one
+    that has been through a JSON round-trip (str keys), so the report reads
+    the same either way.  Keys that are not integer-like are dropped.
+    """
+    out = {}
+    for key, value in workers.items():
+        try:
+            out[int(key)] = value
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def print_report(
@@ -50,9 +68,15 @@ def print_report(
     # may be missing workers whose deliveries were committed via the orphan path
     # or whose peak was tracked in person_peak_count but not flushed into
     # person_peak_delivery (e.g. P#4, P#457 were absent from the summary table).
-    analytics_workers = analytics_summary.get("workers", {})
+    #
+    # AnalyticsEngine.summary() keys workers by int pid, but this report was
+    # written against a JSON round-trip of that dict and looked every worker
+    # up as str(pid).  Every lookup missed: the fallback never fired and Avg
+    # Load / Avg Conf printed 0.00 for everyone.  Normalise to int once here
+    # so the report works on both a live summary and a reloaded JSON one.
+    analytics_workers = _int_keyed(analytics_summary.get("workers", {}))
     carriers_from_peak = set(pid for pid, pk in person_peak_count.items() if pk > 0)
-    carriers_from_analytics = set(int(pid) for pid, w in analytics_workers.items()
+    carriers_from_analytics = set(pid for pid, w in analytics_workers.items()
                                   if w.get("total_sacks", 0) > 0)
     carriers     = sorted(carriers_from_peak | carriers_from_analytics)
     box_carriers = sorted(pid for pid, cnt in box_del_counts.items() if cnt > 0)
@@ -61,7 +85,7 @@ def print_report(
 
     print()
     print(_hr("═"))
-    print("  SACK / BOX DELIVERY REPORT  —  Sack Counter v20")
+    print(f"  SACK / BOX DELIVERY REPORT  —  Sack Counter {_VERSION_TAG}")
     print(f"  Generated : {now_str}")
     print(_hr("═"))
 
@@ -80,7 +104,7 @@ def print_report(
             peak_sacks  = person_peak_count.get(pid, 0)
             # Fall back to analytics for workers missing from person_peak_delivery
             if peak_sacks == 0:
-                peak_sacks = analytics_workers.get(str(pid), {}).get("total_sacks", 0)
+                peak_sacks = analytics_workers.get(pid, {}).get("total_sacks", 0)
             boxes       = box_del_counts.get(pid, 0)
             grand_sacks += peak_sacks
             grand_boxes += boxes
@@ -89,7 +113,7 @@ def print_report(
                 f"  <- peak rescued +{peak_sacks - gate_sacks}"
                 if peak_sacks > gate_sacks else ""
             )
-            ws       = analytics_workers.get(str(pid), {})
+            ws       = analytics_workers.get(pid, {})
             avg_load = ws.get("avg_load_size", 0.0)
             avg_conf = ws.get("avg_confidence", 0.0)
             print(
@@ -141,7 +165,7 @@ def print_report(
     def _peak(pid: int) -> int:
         if pid in person_peak_count and person_peak_count[pid] > 0:
             return person_peak_count[pid]
-        return analytics_workers.get(str(pid), {}).get("total_sacks", 0)
+        return analytics_workers.get(pid, {}).get("total_sacks", 0)
 
     grand_sacks_final = sum(_peak(pid) for pid in carriers)
     grand_boxes_final = sum(box_del_counts.values())

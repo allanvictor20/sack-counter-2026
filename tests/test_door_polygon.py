@@ -173,6 +173,59 @@ class TestPolygonValidation(unittest.TestCase):
         self.assertLess(ny_up * ny_down, 0)
 
 
+class TestNormalAxisSelection(unittest.TestCase):
+    """
+    Regression: the normal was the perpendicular of the p0->p1 hull edge,
+    with room_point only able to flip its SIGN.  For a portrait doorway
+    with the room off to one side, that produced a normal 90 degrees from
+    the truth, so every projection and crossing test measured along the
+    wrong axis.  Every other test in this file uses a SQUARE, where the
+    two axes are equivalent, which is why it went unnoticed.
+    """
+
+    def _portrait_door(self, room_point):
+        """300 wide x 550 tall — clearly taller than it is wide."""
+        return DoorPolygon(
+            points=[(800, 100), (1100, 100), (1100, 650), (800, 650)],
+            room_point=room_point,
+        )
+
+    def test_portrait_door_room_left_gives_horizontal_normal(self):
+        d = self._portrait_door(room_point=(300, 400))
+        nx, ny = d.normal_vec
+        self.assertAlmostEqual(nx, -1.0, places=3)
+        self.assertAlmostEqual(ny, 0.0, places=3)
+
+    def test_portrait_door_room_right_gives_opposite_normal(self):
+        d = self._portrait_door(room_point=(1600, 400))
+        nx, ny = d.normal_vec
+        self.assertAlmostEqual(nx, 1.0, places=3)
+        self.assertAlmostEqual(ny, 0.0, places=3)
+
+    def test_portrait_door_projection_follows_room_direction(self):
+        d = self._portrait_door(room_point=(300, 400))
+        # A point toward the room (left of centroid) must project positive.
+        self.assertGreater(d.project_onto_normal(400, 375), 0)
+        # A point away from the room (right of centroid) must project negative.
+        self.assertLess(d.project_onto_normal(1400, 375), 0)
+
+    def test_landscape_door_room_below_gives_vertical_normal(self):
+        d = DoorPolygon(
+            points=[(100, 300), (900, 300), (900, 450), (100, 450)],
+            room_point=(500, 900),
+        )
+        nx, ny = d.normal_vec
+        self.assertAlmostEqual(nx, 0.0, places=3)
+        self.assertAlmostEqual(ny, 1.0, places=3)
+
+    def test_points_are_plain_ints_for_serialisation(self):
+        """Calibration is written to YAML; numpy scalars break safe_load."""
+        d = self._portrait_door(room_point=(300, 400))
+        for x, y in d.points:
+            self.assertIs(type(x), int)
+            self.assertIs(type(y), int)
+
+
 class TestDoorPolygonDraw(unittest.TestCase):
     def test_draw_runs_without_error(self):
         import cv2

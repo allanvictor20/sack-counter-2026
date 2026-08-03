@@ -110,24 +110,19 @@ def update_sacks(
             else:
                 ground_memory.mark_moving(sid, fn)
 
-    # ── Expire lost confirmed sacks ───────────────────────────
-    for sid in list(state["confirmed_sacks"]):
+    # ── Expire lost tracks ────────────────────────────────────
+    # Both confirmed AND never-confirmed IDs are aged out here.  Only
+    # confirmed_sacks used to be walked, so a one-frame false positive that
+    # never reached confirm_frames kept its entries in sack_hit,
+    # sack_positions, sack_boxes_dict and sack_embeddings (a 576-float32
+    # vector each) for the rest of the session.
+    tracked_sids = set(state["sack_hit"]) | set(state["confirmed_sacks"])
+    for sid in tracked_sids:
         if sid in active_sids:
             continue
         state["sack_miss"][sid] += 1
         if state["sack_miss"][sid] > miss_frames:
-            state["confirmed_sacks"].discard(sid)
-            ownership_mem.clear(sid)
-            # BUG #5 FIX: call cleanup with all remaining active sacks rather
-            # than {sid} (a single-element set whose semantics are the opposite
-            # of what the method expects — it expects the set of sacks to KEEP).
-            # We achieve the same targeted removal by calling the per-entry
-            # methods directly instead of misusing the bulk cleanup API.
-            conf_tracker.remove(sid)
-            state["sack_still_frames"].pop(sid, None)
-            state["ground_sacks"].discard(sid)
-            state["sack_carrier_stamp"].pop(sid, None)
-            state["orphaned_sack_owner"].pop(sid, None)
+            _expire_sack(state, sid, ownership_mem, conf_tracker)
 
     # ── Global cleanup ────────────────────────────────────────
     ghost_sacks.update(
@@ -138,5 +133,45 @@ def update_sacks(
     ownership_mem.cleanup(active_sids)
     ground_memory.cleanup(active_sids, fn)
     sack_sm.cleanup(active_sids, fn)
+    # Ghost history is keyed on every ID still being tracked (not just the
+    # ones visible this frame), so an occluded sack keeps its velocity.
+    ghost_sacks.cleanup(set(state["sack_positions"]))
 
     return active_sids
+
+
+def _expire_sack(state, sid: int, ownership_mem, conf_tracker) -> None:
+    """
+    Drop every per-sack entry for a track that has been lost too long.
+
+    BUG #5 FIX: the per-entry methods are called directly rather than
+    ``cleanup({sid})`` — ``cleanup`` expects the set of sacks to KEEP, so
+    passing the expiring sack was semantically backwards.
+
+    ``delivered_sacks`` is cleared here too.  It is the latch that stops a
+    counted sack from being re-counted, but it was never pruned: since
+    ByteTrack recycles tracker IDs, a genuinely new sack that inherited a
+    retired ID could never be stamped or counted again, so the count drifted
+    progressively low over a long session.  Once the ID has been absent for
+    miss_frames it is no longer the sack that was delivered, so the latch
+    must go with the rest of the track's state.
+
+    Args:
+        state:         PipelineState being mutated.
+        sid:           Sack tracker ID to expire.
+        ownership_mem: OwnershipMemory to clear.
+        conf_tracker:  ConfidenceTracker to prune.
+    """
+    state["confirmed_sacks"].discard(sid)
+    ownership_mem.clear(sid)
+    conf_tracker.remove(sid)
+    state["sack_hit"].pop(sid, None)
+    state["sack_miss"].pop(sid, None)
+    state["sack_positions"].pop(sid, None)
+    state["sack_boxes_dict"].pop(sid, None)
+    state["sack_embeddings"].pop(sid, None)
+    state["sack_still_frames"].pop(sid, None)
+    state["ground_sacks"].discard(sid)
+    state["sack_carrier_stamp"].pop(sid, None)
+    state["orphaned_sack_owner"].pop(sid, None)
+    state["delivered_sacks"].discard(sid)

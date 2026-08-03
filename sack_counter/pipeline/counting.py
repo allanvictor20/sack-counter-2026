@@ -104,7 +104,7 @@ def update_peak_counts(
             return _in_window_proj(cx, cy)
         return _in_window_x(cx)
 
-    stamp_thresh = max(cfg["peak_min_assoc_score"] + 0.1, 0.6)
+    stamp_thresh = cfg["peak_stamp_score"]
 
     for pid in state["confirmed_persons"]:
         if pid in state["persons_past_door"]:
@@ -113,20 +113,29 @@ def update_peak_counts(
             continue
         state["person_approach_fn"].setdefault(pid, fn)
 
-        # BUG1-B: stamp sacks to this carrier on first high-confidence hit
+        # BUG1-B: stamp sacks to this carrier on first high-confidence hit.
+        #
+        # The eligibility test deliberately does NOT require the sack to be
+        # unstamped.  It used to (`sid not in sack_carrier_stamp`), which
+        # made the STAMP TRANSFER branch below unreachable: a sack could
+        # never move to a second carrier, so a handover between two workers
+        # stayed credited to whoever picked it up first.  Transfer is safe
+        # to allow here because owner_map is already the output of
+        # OwnershipMemory's hysteresis — a new pid only wins after beating
+        # the incumbent by ownership_switch_margin.
         for (sid, x1, y1, x2, y2, cx, cy, sc) in confirmed_sack_list:
             if (owner_map.get(sid) == pid
                     and scores_map.get(sid, 0.0) >= stamp_thresh
                     and sc >= cfg["peak_conf_sack_floor"]
                     and scores_map.get(sid, 0.0) >= cfg["peak_min_assoc_score"]
-                    and sid not in state["sack_carrier_stamp"]
+                    and state["sack_carrier_stamp"].get(sid) != pid
                     and sid not in state["just_evicted_sacks"]
                     and sid not in state["delivered_sacks"]
                     ):
                 old_stamp = state["sack_carrier_stamp"].get(sid)
-                if old_stamp is not None and old_stamp != pid:
+                if old_stamp is not None:
                     logger.debug(
-                        "STAMP TRANSFER sack#%d %d -> P#%d  frame=%d",
+                        "STAMP TRANSFER sack#%d P#%d -> P#%d  frame=%d",
                         sid, old_stamp, pid, fn,
                     )
                     state["person_peak_count"][old_stamp] = 0

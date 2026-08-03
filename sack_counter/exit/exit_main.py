@@ -43,22 +43,15 @@ No person detection, no carrier stamping, no peak windows.
 
 from __future__ import annotations
 
-import io
-import sys
-import json
 import time
 import logging
 import numpy as np
 import cv2
 from collections import deque
 
-# ── UTF-8 stdout fix (Windows) ────────────────────────────────
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "buffer"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
-from ..config import load_config
+from ..console import force_utf8_stdio
+from ..config import load_config, save_calibration
+from ..model_classes import resolve_class_indices
 from ..door_polygon import calibrate_door_polygon, DoorPolygon, _get_display_cap
 from .landing_zone import calibrate_landing_zone, LandingZone
 from .exit_state import ExitPipelineState
@@ -108,18 +101,22 @@ def run_exit_counter(
                            demoted from primary to optional).
     """
     # ── Config ────────────────────────────────────────────────
+    force_utf8_stdio()
     cfg = load_config(config_path)
     if conf_sack is not None:
         cfg["conf_sack"] = conf_sack
 
-    confirm_frames     = max(2, int(20 * cfg.get("confirm_secs", 0.4)))
-    miss_frames        = max(2, int(20 * cfg.get("miss_secs", 1.5)))
-    cross_threshold_px = float(cfg.get("door_cross_threshold_px", 20))
-    door_proximity_px  = float(cfg.get("door_entry_proximity_px", 60))
-    confirm_timeout    = int(cfg.get("exit_confirm_timeout_frames", 45))
-    still_frames       = int(cfg.get("exit_still_frames", 8))
-    dedup_radius_px    = float(cfg.get("exit_dedup_radius_px", 35))
-    dedup_recency_window = int(cfg.get("exit_dedup_recency_window", 20))
+    # Every key below now lives in DEFAULT_CFG, so these read straight from
+    # cfg.  The inline cfg.get(key, default) fallbacks they replace had
+    # drifted out of step with config.yaml — door_cross_threshold_px in
+    # particular defaulted to 20 here and 30 in entry mode, so the two modes
+    # disagreed about where the door plane was.
+    cross_threshold_px   = float(cfg["door_cross_threshold_px"])
+    door_proximity_px    = float(cfg["door_entry_proximity_px"])
+    confirm_timeout      = int(cfg["exit_confirm_timeout_frames"])
+    dedup_radius_px      = float(cfg["exit_dedup_radius_px"])
+    dedup_recency_window = int(cfg["exit_dedup_recency_window"])
+    stale_tentative_frames = int(cfg["exit_stale_tentative_frames"])
 
     print(f"\n{'='*60}")
     print("  SACK EXIT COUNTER")
@@ -145,20 +142,14 @@ def run_exit_counter(
     exit_model_path = cfg.get("exit_model_path") or cfg["model_path"]
     model = YOLO(exit_model_path)
     print(f"  Using model: {exit_model_path}")
-    # Verify sack class index
-    sack_cls = _find_class(model.names, "sack")
-    if sack_cls is None:
-        raise RuntimeError(
-            f"No 'sack' class found in model.  Available: {model.names}"
-        )
+    # Resolve the sack class.  Exit mode cannot do anything without it, so
+    # it is 'strict': a name match is required and a positional fallback is
+    # refused, rather than silently counting whatever class 1 happens to be.
+    sack_cls = resolve_class_indices(
+        model.names, required=("sack",), strict=("sack",),
+    )["sack"]
+    print(f"  Sack class index: {sack_cls}")
     logger.info("Sack class index: %d", sack_cls)
-
-    # ── ByteTrack ──────────────────────────────────────────────
-    try:
-        from ultralytics import solutions  # noqa: F401 — just check import
-        _bytetrack_via_yolo = True
-    except Exception:
-        _bytetrack_via_yolo = True  # always use YOLO's built-in tracker
 
     # ── Video source ───────────────────────────────────────────
     cap = cv2.VideoCapture(0 if source == "webcam" else source)
@@ -172,9 +163,9 @@ def run_exit_counter(
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
 
-    # Recalculate timing with real FPS
-    confirm_frames = max(2, int(src_fps * cfg.get("confirm_secs", 0.4)))
-    miss_frames    = max(2, int(src_fps * cfg.get("miss_secs", 1.5)))
+    # Track lifetimes are in seconds; convert with the source's real FPS.
+    confirm_frames = max(2, int(src_fps * cfg["confirm_secs"]))
+    miss_frames    = max(2, int(src_fps * cfg["miss_secs"]))
 
     # ── Calibration ───────────────────────────────────────────
     if not headless:
@@ -185,6 +176,12 @@ def run_exit_counter(
         print("  Step 2/2: Calibrate the LANDING ZONE polygon")
         landing_zone = _load_or_calibrate_landing(cap, door, cfg)
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        # Persist both polygons so --headless can replay this session.
+        cfg["door_polygon_points"]  = door.points
+        cfg["door_room_point"]      = door.room_point
+        cfg["landing_zone_points"]  = landing_zone.points
+        save_calibration(cfg)
     else:
         door         = _load_door_from_cfg(cfg)
         landing_zone = _load_landing_from_cfg(cfg)
@@ -271,6 +268,7 @@ def run_exit_counter(
             motion_tracker=motion_tracker,
             dedup_radius_px=dedup_radius_px,
             dedup_recency_window=dedup_recency_window,
+            min_overlap=float(cfg["exit_landing_min_overlap"]),
         )
 
         if use_door_crossing:
@@ -281,7 +279,7 @@ def run_exit_counter(
             expire_old_projections(state, active_ids)
 
             # ── Stale tentative safety net ──────────────────────
-            cleanup_stale_tentatives(state, fn)
+            cleanup_stale_tentatives(state, fn, max_age=stale_tentative_frames)
 
             # ── Periodic discrepancy check ──────────────────────
             if fn % _DISCREPANCY_CHECK_INTERVAL == 0:
@@ -365,14 +363,6 @@ def _detect_sacks(
         detections.append((int(tid), x1, y1, x2, y2, cx, cy, float(conf)))
 
     return detections
-
-
-def _find_class(names: dict, target: str) -> int | None:
-    """Return the class index for *target* (case-insensitive), or None."""
-    for idx, name in names.items():
-        if name.lower() == target.lower():
-            return int(idx)
-    return None
 
 
 def _load_or_calibrate_door(cap, cfg: dict) -> DoorPolygon:

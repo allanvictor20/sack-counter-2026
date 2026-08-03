@@ -9,8 +9,12 @@ import pytest
 import sys
 import os
 
-# Make sure the package root is on the path regardless of how pytest is invoked
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+# Make sure the package root is on the path regardless of how pytest is invoked.
+# This is tests/, so the repo root is ONE level up — the previous "..", ".."
+# pointed at the repo's PARENT directory and only worked by accident, because
+# pytest inserts the rootdir itself.
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")))
 
 from sack_counter.exit.exit_state import ExitPipelineState
 from sack_counter.exit.landing_zone import LandingZone

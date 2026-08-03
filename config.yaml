@@ -24,8 +24,9 @@ miss_secs:     1.5    # frames before a lost track is discarded
 occlusion_secs: 0.5   # ghost-sack duration during occlusion
 
 # ── Motion / still detection ──────────────────────────────────
-still_window:        10
-still_thresh_ratio:  0.02
+# still_window / still_thresh_ratio were removed: SackMotionTracker
+# accepted them and discarded them, so they never affected anything.
+# Stillness is decided by mean speed over still_speed_window samples.
 still_speed_thresh:  1.5
 still_speed_window:  8
 still_suppress_secs: 1.5   # seconds still before classified as ground sack
@@ -62,6 +63,10 @@ peak_window_px:        350   # approach window width
 peak_freeze_px:        40    # freeze zone near gate B
 peak_min_assoc_score:  0.55
 peak_conf_sack_floor:  0.55
+peak_stamp_score:      0.65  # score needed to stamp a sack to a carrier.
+                             # Was hardcoded as max(peak_min_assoc_score
+                             # + 0.1, 0.6), which ignored any configured
+                             # value below 0.6.
 
 # ── Lift guard ────────────────────────────────────────────────
 lift_owner_stable_frames: 6  # min frames same owner before pickup accepted
@@ -83,8 +88,12 @@ door_entry_proximity_px:   60    # FIX-D: px from polygon plane to also trigger 
 direction_lookback_frames: 8
 min_convergence_px:        20
 reentry_margin_px:         50
+reentry_grace_frames:      5     # frames after a commit during which
+                                 # re-entry cannot reset a carrier
 door_approach_side:        right
-door_cross_threshold_px:   30
+door_cross_threshold_px:   30    # SIGNED projection past the door plane.
+                                 # Positive = room side; a sack on the
+                                 # corridor side never counts as crossed.
 
 # ── Exit counter (v23) ─────────────────────────────────────────
 landing_zone_points:           null  # set by exit-mode calibration
@@ -106,6 +115,10 @@ exit_dedup_recency_window:     20    # max frames since an old landed
                                       # sack's ID went quiet for a new ID
                                       # at the same spot to still count
                                       # as "probably the same sack"
+exit_landing_min_overlap:    0.30    # fraction of a sack's bbox that must
+                                      # fall inside the landing zone polygon
+exit_stale_tentative_frames:   90    # hard-evict age for a tentative
+                                      # crossing that was never resolved
 exit_landing_jitter_tolerance:  2    # consecutive non-still readings
                                       # (while still detected) allowed
                                       # before a full still-streak reset.

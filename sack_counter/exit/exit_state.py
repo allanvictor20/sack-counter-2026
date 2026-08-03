@@ -54,6 +54,12 @@ class ExitSackState:
     # sids confirmed stationary inside landing zone
     landed_sacks: set = field(default_factory=set)
 
+    # Subset of landed_sacks that are ALIASES — a second (or third) track
+    # ID assigned to a sack that was already landed, recognised by spatial
+    # dedup.  Held separately so the distinct physical sack count is
+    # len(landed_sacks) - len(landed_aliases).
+    landed_aliases: set = field(default_factory=set)
+
     # sids that have been picked up from landing zone (for logging)
     carried_away_sacks: set = field(default_factory=set)
 
@@ -113,6 +119,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "tentative_crossings":  ("sacks", "tentative_crossings"),
     "crossed_sacks":        ("sacks", "crossed_sacks"),
     "landed_sacks":         ("sacks", "landed_sacks"),
+    "landed_aliases":       ("sacks", "landed_aliases"),
     "carried_away_sacks":   ("sacks", "carried_away_sacks"),
     # count state
     "total_sacks_out":      ("counts", "total_sacks_out"),

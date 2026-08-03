@@ -1,0 +1,36 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model weights — large binaries, distributed out of band
+*.pt
+*.onnx
+*.engine
+
+# Calibration written by the interactive calibrators.
+# Machine/camera specific: a polygon clicked on one camera angle is
+# meaningless on another, so this is deliberately not shared.
+calibration.yaml
+
+# Run artefacts
+*.log
+delivery_log_*.json
+exit_log_*.json
+output_*.mp4
+exit_output.mp4
+screenshot_*.jpg
+exit_screenshot_*.jpg
+diagnostic_frames/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

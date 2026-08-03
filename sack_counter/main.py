@@ -21,20 +21,15 @@ FIX-TTL, FIX-PEAK0, FIX 1-3b, BUG1-A/B, BUG2).
 from __future__ import annotations
 
 import cv2
-import io
-import sys
 import json
 import time
 import numpy as np
 from collections import deque
 
-# ── FIX-UNICODE: force UTF-8 on Windows ──────────────────────
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "buffer"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
-from .config import load_config
+from .version import VERSION_TAG
+from .console import force_utf8_stdio
+from .config import load_config, save_calibration
+from .model_classes import resolve_class_indices
 from .door_polygon import calibrate_door_polygon, DoorPolygon, _get_display_cap
 from .assignment import assign_sacks_hungarian
 from .drawing import draw_sack_boxes, draw_box_detections, draw_person_box, draw_hud
@@ -65,18 +60,19 @@ def run(
         conf_sack:   Override detection confidence for sacks.
         conf_person: Override detection confidence for persons.
         conf_box:    Override detection confidence for boxes.
-        save_output: If True, writes annotated video to ``output_v21.mp4``.
+        save_output: If True, writes annotated video to ``output_v23.mp4``.
         headless:    If True, suppresses the display window.
         config_path: Path to YAML or JSON config file.
     """
     # ── Config ────────────────────────────────────────────────
+    force_utf8_stdio()
     cfg = load_config(config_path)
     if conf_sack   is not None: cfg["conf_sack"]   = conf_sack
     if conf_person is not None: cfg["conf_person"]  = conf_person
     if conf_box    is not None: cfg["conf_box"]    = conf_box
 
     print(f"\n{'='*62}")
-    print(f"  Sack-Per-Person Counter  v21")
+    print(f"  Sack-Per-Person Counter  {VERSION_TAG}")
     print(f"  Model       : {cfg['model_path']}  (0=person 1=sack 2=box)")
     print(f"  Source      : {source}")
     print(f"  Conf sack   : {cfg['conf_sack']}   "
@@ -87,6 +83,13 @@ def run(
     # ── Model + video source ──────────────────────────────────
     model = YOLO(cfg["model_path"])
     print(f"Model classes: {model.names}")
+    # Resolve by name rather than assuming 0=person/1=sack/2=box.  The
+    # hardcoded indices were recorded only in a config comment, so a model
+    # with a different class order counted the wrong objects silently.
+    cls_idx      = resolve_class_indices(model.names)
+    CLS_PERSON   = cls_idx["person"]
+    CLS_SACK     = cls_idx["sack"]
+    CLS_BOX      = cls_idx["box"]
 
     cap = cv2.VideoCapture(0 if source == "webcam" else source)
     if not cap.isOpened():
@@ -114,9 +117,13 @@ def run(
         cfg.setdefault("door_approach_side", "right")
     else:
         door = calibrate_door_polygon(cap, cfg)
-        # Save calibrated points for headless replay
+        # Persist the calibration so --headless can actually replay it.
+        # These assignments used to update only the in-memory cfg, so the
+        # clicked polygon died with the process and headless mode could
+        # never be satisfied without hand-editing YAML.
         cfg["door_polygon_points"] = door.points
         cfg["door_room_point"]     = door.room_point
+        save_calibration(cfg)
 
     # ── Build session (owns all stateful components) ──────────
     session = PipelineSession(
@@ -141,7 +148,7 @@ def run(
     out = None
     if save_output:
         out = cv2.VideoWriter(
-            f"output_v21.mp4",
+            f"output_{VERSION_TAG}.mp4",
             cv2.VideoWriter_fourcc(*"mp4v"),
             src_fps, (fw, fh),
         )
@@ -159,7 +166,7 @@ def run(
     DISP_MAX_W, DISP_MAX_H = _get_display_cap()
     disp_scale = min(DISP_MAX_W / fw, DISP_MAX_H / fh, 1.0)  # never upscale
     disp_w, disp_h = int(fw * disp_scale), int(fh * disp_scale)
-    WIN_NAME = "Sack Counter v21"
+    WIN_NAME = f"Sack Counter {VERSION_TAG}"
     if not headless:
         cv2.namedWindow(WIN_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WIN_NAME, disp_w, disp_h)
@@ -204,21 +211,27 @@ def run(
                 sc  = float(box.conf[0])
                 tid = int(box.id[0])
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                if cls == 0 and sc >= cfg["conf_person"]:
+                if cls == CLS_PERSON and sc >= cfg["conf_person"]:
                     raw_persons.append((tid, x1, y1, x2, y2, sc))
-                elif cls == 1 and sc >= cfg["conf_sack"]:
+                elif cls == CLS_SACK and sc >= cfg["conf_sack"]:
                     raw_sacks.append((tid, x1, y1, x2, y2,
                                       (x1+x2)//2, (y1+y2)//2, sc))
-                elif cls == 2 and sc >= cfg["conf_box"]:
+                elif cls == CLS_BOX and sc >= cfg["conf_box"]:
                     raw_boxes.append((tid, x1, y1, x2, y2, sc))
 
         state["raw_sacks"] = raw_sacks
         state["raw_boxes"] = raw_boxes
 
         # ── 2. Person tracking ────────────────────────────────
+        reid_before = len(session.relinker.reid_events)
         active_pids = update_persons(raw_persons, session, fn)
         timeout_persons(active_pids, session, fn)
         session.relinker.expire_lost(fn)
+        # Feed relinks to analytics.  record_reid_event() existed but was
+        # never called, so analytics.pipeline.reid_events reported 0 in the
+        # same JSON file whose top-level reid_events list was populated.
+        for _ in range(len(session.relinker.reid_events) - reid_before):
+            session.analytics.record_reid_event()
 
         # ── 3. Sack tracking + ground suppression ─────────────
         update_sacks(raw_sacks, session, fn)
@@ -301,20 +314,26 @@ def run(
             )
 
         
-        # ── 7c. Re-entry reset ────────────────────────────────
+        # ── 7a. Re-entry reset ────────────────────────────────
         check_door_reentry(session, fn)
-        
-        # ── 7a. Update door zone candidates ──────────────────
+
+        # ── 7b. Door crossing commits ─────────────────────────
         # Pass active_pids so update_door_zone can distinguish a genuinely
         # missing person from one whose stale person_prev_cx looks valid.
+        crossings_before = len(state["delivery_log"])
         update_door_zone(session, fn, active_pids)
+        n_crossings = len(state["delivery_log"]) - crossings_before
 
         
         # ── 8. Peak state cleanup (persons long past door) ────
+        # Iterates person_peak_count, not person_peak_used.  Nothing has
+        # ever set person_peak_used to True, so this loop was walking a
+        # permanently empty dict and no peak state was ever reclaimed for
+        # a carrier who drifted well past the door.
         if cfg.get("peak_count_enabled", True):
             door_cx = session.door.centroid[0]
             approach_side = cfg.get("door_approach_side", "right")
-            for pid in list(state["person_peak_used"].keys()):
+            for pid in list(state["person_peak_count"].keys()):
                 pid_cx = state["person_prev_cx"].get(pid)
                 if pid_cx is not None:
                     if approach_side == "right":
@@ -323,7 +342,6 @@ def run(
                         stale = pid_cx > door_cx + cfg["peak_freeze_px"] * 2
                     if stale:
                         state["person_peak_count"].pop(pid, None)
-                        state["person_peak_used"].pop(pid, None)
                         state["person_approach_fn"].pop(pid, None)
 
         # ── 9. Expire stale orphaned peaks (BUG2) ─────────────
@@ -365,7 +383,7 @@ def run(
                 "boxes":     len(raw_boxes),
                 "still":     assign_stats.get("still", 0),
                 "assigned":  assign_stats.get("assigned", 0),
-                "crossings": 0,
+                "crossings": n_crossings,
                 "ghosts":    len(list(session.ghost_sacks.iter_ghosts())),
             },
         )
@@ -380,7 +398,7 @@ def run(
             if key == ord("q"):
                 break
             elif key == ord("s"):
-                cv2.imwrite(f"screenshot_v21_{fn}.jpg", frame)
+                cv2.imwrite(f"screenshot_{VERSION_TAG}_{fn}.jpg", frame)
 
     # ════════════════════════════════════════════════════════
     #  Teardown
@@ -402,7 +420,7 @@ def run(
         analytics_summary     = analytics_summary,
     )
 
-    log_path = "delivery_log_v21.json"
+    log_path = f"delivery_log_{VERSION_TAG}.json"
     with open(log_path, "w") as f:
         json.dump({
             "total_sacks":          state["total_sacks_counted"],

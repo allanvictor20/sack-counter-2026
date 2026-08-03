@@ -145,7 +145,7 @@ class TestOwnershipMemory(unittest.TestCase):
 class TestHungarianAssignment(unittest.TestCase):
     def setUp(self):
         self.cfg    = _cfg(max_sacks_per_person=4, min_assoc_score=0.05)
-        self.motion = SackMotionTracker(speed_thresh=1.5, speed_window=8, window=10, thresh_px=10)
+        self.motion = SackMotionTracker(speed_thresh=1.5, speed_window=8)
         self.ownership = OwnershipMemory(switch_margin=0.15)
 
     def _warm_motion(self, sid, cx=140, cy=130, n=12):

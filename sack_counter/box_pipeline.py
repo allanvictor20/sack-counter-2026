@@ -16,16 +16,21 @@ from .confidence import ConfidenceTracker, confidence_class
 class BoxCountingPipeline:
     def __init__(self, confirm_frames: int, miss_frames: int,
                  ownership_mem: OwnershipMemory,
-                 conf_tracker: ConfidenceTracker):
+                 conf_tracker: ConfidenceTracker,
+                 cfg: dict = None):
         self.confirm_frames   = confirm_frames
         self.miss_frames      = miss_frames
         self.ownership        = ownership_mem
         self.conf_tracker     = conf_tracker
+        # Retained for confidence_class() at delivery time.  update() also
+        # refreshes it, so a cfg passed per-frame still works.
+        self._cfg             = cfg or {}
 
         self._hit_count:   dict[int, int]   = defaultdict(int)
         self._miss_count:  dict[int, int]   = defaultdict(int)
         self._confirmed:   set              = set()
-        self._prev_cx:     dict[int, int]   = {}
+        # bid -> pid for boxes currently held, used to credit a carrier
+        # when they are committed at the door.
         self._owner:       dict[int, int]   = {}
         self._delivered:   dict[int, set]   = defaultdict(set)
         self.total_counted: int             = 0
@@ -34,6 +39,8 @@ class BoxCountingPipeline:
     def update(self, raw_boxes, person_boxes, fn, fps,
                cfg: dict = None,
                sack_owner_scores: dict = None) -> dict:
+        if cfg:
+            self._cfg = cfg
         active_bids = {b[0] for b in raw_boxes}
 
         for (bid, *_) in raw_boxes:
@@ -71,14 +78,61 @@ class BoxCountingPipeline:
                     best_score = s
                     best_pid   = pid
             if best_pid is not None and best_score > 0.05:
-                box_owner[bid] = self.ownership.update(bid, best_pid, best_score)
+                resolved = self.ownership.update(bid, best_pid, best_score)
+                box_owner[bid] = resolved
+                self._owner[bid] = resolved
                 self.conf_tracker.record_detection(bid, sc)
                 self.conf_tracker.record_ownership(bid, best_score)
 
-        # v21: Box gate crossing removed. Boxes are tracked for ownership
-        # display purposes; delivery counting via door-zone follows sack logic.
+        # Drop ownership for boxes whose track has been evicted, so a
+        # carrier is not later credited with a box that no longer exists.
+        for bid in list(self._owner):
+            if bid not in self._confirmed:
+                self._owner.pop(bid, None)
 
         return box_owner
+
+    def commit_delivery(self, pid: int, fn: int) -> int:
+        """
+        Credit every box currently owned by *pid* as delivered.
+
+        v21 removed box gate-crossing and never replaced it, so
+        ``_delivered`` was never written: ``delivery_counts()`` always
+        returned an empty dict and ``total_counted`` was permanently 0,
+        even though the report printed Boxes columns and the JSON log wrote
+        a ``total_boxes`` field.  Boxes now settle on the same trigger as
+        sacks — the door-crossing commit for the carrier holding them.
+
+        Args:
+            pid: Carrier person ID being committed at the door.
+            fn:  Current frame number.
+
+        Returns:
+            Number of boxes newly credited to *pid*.
+        """
+        held = [bid for bid, owner in self._owner.items() if owner == pid]
+        new  = [bid for bid in held if bid not in self._delivered[pid]]
+        if not new:
+            return 0
+
+        for bid in new:
+            self._delivered[pid].add(bid)
+            self._owner.pop(bid, None)
+        self.total_counted += len(new)
+
+        for bid in new:
+            conf = self.conf_tracker.delivery_confidence(bid)
+            self.delivery_log.append({
+                "frame":            fn,
+                "box_id":           bid,
+                "person_id":        pid,
+                "confidence":       round(conf, 3),
+                "confidence_class": confidence_class(conf, self._cfg),
+                "high_conf":        conf >= self.conf_tracker.min,
+                "type":             "box",
+                "trigger":          "door_crossing",
+            })
+        return len(new)
 
     def delivery_counts(self) -> dict:
         return {pid: len(bids) for pid, bids in self._delivered.items()}

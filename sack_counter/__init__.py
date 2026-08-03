@@ -31,6 +31,8 @@ analytics, ground_memory, pipeline.state) can be imported in tests and
 utility scripts without requiring a GPU environment.
 """
 
+from .version import __version__, VERSION_TAG
+
 # ── Always-safe imports (no torch / cv2 / ultralytics) ───────────────────────
 from .config import DEFAULT_CFG, load_config
 from .door_polygon import DoorPolygon, calibrate_door_polygon
@@ -48,6 +50,7 @@ from .pipeline import (
 )
 
 __all__ = [
+    "__version__", "VERSION_TAG",
     "DEFAULT_CFG", "load_config",
     "DoorPolygon", "calibrate_door_polygon",
     "ConfidenceTracker", "confidence_class",
