@@ -374,13 +374,19 @@ class TestDoorReentry(unittest.TestCase):
 
     def test_reentry_respects_grace_period_after_commit(self):
         """FIX 2: a person committed within reentry_grace_frames must not
-        be reset even if their last known position looks like corridor."""
+        be reset even if their last known position looks like corridor.
+
+        The grace period is driven by state["last_commit_frame"], an index
+        maintained by the commit path, rather than by rescanning the whole
+        delivery_log on every frame.
+        """
         session = _make_session()
         state = session.state
         state["persons_past_door"].add(1)
         state["person_prev_cx"][1] = 200
         state["person_boxes"][1]   = (180, 10, 220, 60)  # corridor side
 
+        state["last_commit_frame"][1] = 48
         state["delivery_log"].append({
             "frame": 48, "person_id": 1, "peak_count": 2,
         })
@@ -396,12 +402,21 @@ class TestDoorReentry(unittest.TestCase):
         state["person_prev_cx"][1] = 200
         state["person_boxes"][1]   = (180, 10, 220, 60)
 
+        state["last_commit_frame"][1] = 10
         state["delivery_log"].append({
             "frame": 10, "person_id": 1, "peak_count": 2,
         })
 
         check_door_reentry(session, fn=50)  # 40 frames after commit, grace=5
         self.assertNotIn(1, state["persons_past_door"])
+
+    def test_commit_records_last_commit_frame(self):
+        """The commit path must populate the index check_door_reentry reads."""
+        session = _make_session()
+        session.state["person_peak_count"][1] = 2
+        _stamp_sack(session, sid=1, pid=1, cx=200, cy=290)
+        update_door_zone(session, fn=77)
+        self.assertEqual(session.state["last_commit_frame"][1], 77)
 
     def test_reentry_clears_stale_sack_stamps(self):
         session = _make_session()

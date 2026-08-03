@@ -77,7 +77,6 @@ class PipelineSession:
         self.miss_frames      = max(2, int(src_fps * cfg["miss_secs"]))
         self.occlusion_frames = max(1, int(src_fps * cfg["occlusion_secs"]))
         self.reid_mem_frames  = max(2, int(src_fps * cfg["reid_memory_secs"]))
-        self.still_thresh_px  = int(frame_width * cfg["still_thresh_ratio"])
         self.suppress_frames  = max(1, int(src_fps * cfg["still_suppress_secs"]))
 
         # ── Logger ────────────────────────────────────────────────
@@ -89,8 +88,6 @@ class PipelineSession:
         self.motion_tracker = SackMotionTracker(
             speed_thresh=cfg["still_speed_thresh"],
             speed_window=cfg["still_speed_window"],
-            window=cfg["still_window"],
-            thresh_px=self.still_thresh_px,
         )
         self.ghost_sacks   = GhostSacks(max_frames=self.occlusion_frames)
         self.ownership_mem = OwnershipMemory(cfg["ownership_switch_margin"])
@@ -112,6 +109,7 @@ class PipelineSession:
             miss_frames    = self.miss_frames,
             ownership_mem  = box_ownership_mem,
             conf_tracker   = box_conf_tracker,
+            cfg            = cfg,
         )
 
         # ── New v18-v20 modules ───────────────────────────────────

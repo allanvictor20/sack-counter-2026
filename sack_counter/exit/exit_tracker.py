@@ -61,12 +61,24 @@ def update_exit_sacks(
         state["sack_hit"][sid] = state["sack_hit"].get(sid, 0) + 1
         state["sack_miss"][sid] = 0  # reset miss streak
 
-    # Miss counter for absent tracks
-    for sid in list(state["confirmed_sacks"]):
-        if sid not in detected_ids:
-            state["sack_miss"][sid] = state["sack_miss"].get(sid, 0) + 1
-            if state["sack_miss"][sid] > miss_frames:
-                _evict_sack(state, sid)
+    # Miss counter for absent tracks.
+    #
+    # This walks every tracked ID, not just the confirmed ones.  Only
+    # confirmed_sacks used to be aged, so an ID that flickered once and
+    # never reached confirm_frames was never evicted and kept its entries
+    # in sack_hit / sack_positions / sack_boxes / sack_conf for the rest of
+    # the session.
+    #
+    # A miss also resets the hit streak.  Confirmation is documented as
+    # "seen for confirm_frames CONSECUTIVE frames", but hits only ever
+    # accumulated, so three sightings minutes apart confirmed a track.
+    for sid in set(state["sack_hit"]) | set(state["confirmed_sacks"]):
+        if sid in detected_ids:
+            continue
+        state["sack_miss"][sid] = state["sack_miss"].get(sid, 0) + 1
+        state["sack_hit"][sid]  = 0
+        if state["sack_miss"][sid] > miss_frames:
+            _evict_sack(state, sid)
 
     # Confirm new tracks
     for sid in detected_ids:
@@ -75,16 +87,19 @@ def update_exit_sacks(
             state["confirmed_sacks"].add(sid)
             logger.debug("EXIT SACK CONFIRMED  sid=%d  frame=%d", sid, fn)
 
-    # Build confirmed list with current positions
+    # Build the confirmed list from THIS frame's detections only.  It used
+    # to be built from stored positions, so a confirmed sack that was
+    # missing but not yet evicted was returned with a stale position as
+    # though it had been detected — which then fed a phantom "active" ID
+    # into the landing-zone and projection-expiry logic.
     confirmed: list[tuple] = []
-    for sid in state["confirmed_sacks"]:
-        pos = state["sack_positions"].get(sid)
-        box = state["sack_boxes"].get(sid)
-        conf = state["sack_conf"].get(sid, 0.0)
-        if pos and box:
-            x1, y1, x2, y2 = box
-            cx, cy = pos
-            confirmed.append((sid, x1, y1, x2, y2, cx, cy, conf))
+    for sid in detected_ids:
+        if sid not in state["confirmed_sacks"]:
+            continue
+        x1, y1, x2, y2 = state["sack_boxes"][sid]
+        cx, cy = state["sack_positions"][sid]
+        confirmed.append((sid, x1, y1, x2, y2, cx, cy,
+                          state["sack_conf"].get(sid, 0.0)))
 
     return confirmed
 

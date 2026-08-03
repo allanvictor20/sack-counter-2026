@@ -104,7 +104,10 @@ _DUPLICATE_RADIUS_PX = 35
 # gets evicted, then immediately re-detected under a new ID, is still
 # correctly matched against its own recent position.
 _DUPLICATE_RECENCY_WINDOW = 20
-                                    # before a sack is marked "landed"
+
+# Fraction of a sack's bounding box that must fall inside the landing zone
+# polygon for it to count as "in the zone".
+_DEFAULT_MIN_OVERLAP = 0.30
 
 
 class LandingZoneTracker:
@@ -369,6 +372,7 @@ def update_landing_zone(
     motion_tracker: "LandingZoneTracker",
     dedup_radius_px: float = _DUPLICATE_RADIUS_PX,
     dedup_recency_window: int = _DUPLICATE_RECENCY_WINDOW,
+    min_overlap: float = _DEFAULT_MIN_OVERLAP,
 ) -> list[dict]:
     """
     Update landing zone state and emit DIRECT_LAND events when new sacks land.
@@ -403,7 +407,7 @@ def update_landing_zone(
     # the boundary of a pile — are still correctly detected.
     in_zone_ids: set[int] = set()
     for (sid, x1, y1, x2, y2, cx, cy, conf) in sack_detections:
-        if landing_zone.bbox_overlaps(x1, y1, x2, y2):
+        if landing_zone.bbox_overlaps(x1, y1, x2, y2, min_fraction=min_overlap):
             in_zone_ids.add(sid)
             motion_tracker.update(sid, cx, cy)
 
@@ -463,6 +467,7 @@ def update_landing_zone(
             # recency tracking under the NEW sid so subsequent frames
             # keep the recency window alive correctly.
             state["landed_sacks"].add(sid)
+            state["landed_aliases"].add(sid)
             state["landed_positions"][sid] = (cx, cy)
             state["landed_last_seen_frame"][sid] = fn
             logger.debug(
@@ -486,7 +491,14 @@ def update_landing_zone(
     if newly_landed:
         delta = len(newly_landed)
         state["landing_exit_count"] = state["landing_exit_count"] + delta
-        state["landing_peak_count"] = len(state["landed_sacks"])
+        # Count DISTINCT physical sacks: landed_sacks also holds the alias
+        # IDs recorded when a sack's track ID churned, so using its raw
+        # length made the HUD's "PILE NOW" drift above the actual count by
+        # one per dedup — reporting more sacks on the floor than were
+        # counted as having exited.
+        state["landing_peak_count"] = (
+            len(state["landed_sacks"]) - len(state["landed_aliases"])
+        )
 
         for sid in newly_landed:
             event = {

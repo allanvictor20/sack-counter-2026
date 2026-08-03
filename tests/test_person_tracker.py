@@ -3,6 +3,17 @@ test_person_tracker.py — Unit tests for person_tracker helpers.
 
 Tests timeout_persons and update_persons logic in isolation using a
 lightweight mock PipelineSession — no OpenCV, YOLO, or main.py imports.
+
+History
+-------
+This module used to also hold TestExitBuffer and TestReentryGuard, which
+targeted the v19 gate design (``GateCounter``, ``_EXIT_BUFFER_PX``).  That
+design was replaced by the door polygon in v21 and both symbols were
+deleted from the package — but the tests were left behind, importing a
+name that no longer existed.  Because pytest aborts on a collection
+error, that single stale import made the ENTIRE suite unrunnable, not
+just this file.  Door-side re-entry behaviour is covered by
+TestDoorReentry in test_door_crossing.py.
 """
 
 import unittest
@@ -15,17 +26,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sack_counter.trackers import OwnershipMemory
 from sack_counter.pipeline.state import PipelineState
-from sack_counter.pipeline.person_tracker import (
-    timeout_persons,
-    _EXIT_BUFFER_PX,
-)
+from sack_counter.pipeline.person_tracker import timeout_persons
 
 
-def _make_session(direction="RL", line_x=640, offset=40, miss_frames=10):
+def _make_session(miss_frames=10):
     """Build a minimal mock PipelineSession for person_tracker tests."""
     session = MagicMock()
     session.state = PipelineState()
-    session.gate  = GateCounter(line_x=line_x, direction=direction, offset=offset)
     session.ownership_mem = OwnershipMemory(switch_margin=0.10)
     session.miss_frames = miss_frames
     # relinker: canonical returns pid unchanged, register_lost is a no-op
@@ -33,71 +40,6 @@ def _make_session(direction="RL", line_x=640, offset=40, miss_frames=10):
     session.relinker.register_lost.return_value = None
     session.logger = MagicMock()
     return session
-
-
-class TestExitBuffer(unittest.TestCase):
-    """Critical Bug #3: exit buffer must be large enough to not fire prematurely."""
-
-    def test_exit_buffer_at_least_20px(self):
-        """Regression: buffer was 5 px — must be >= 20 px."""
-        self.assertGreaterEqual(_EXIT_BUFFER_PX, 20)
-
-    def test_rl_exit_threshold_uses_buffer(self):
-        """For RL, person must be _EXIT_BUFFER_PX past exit_line to trigger."""
-        session = _make_session(direction="RL", line_x=640, offset=40)
-        gate = session.gate
-        # gate.exit_line = 640; trigger at cx < 640 - _EXIT_BUFFER_PX
-        threshold = gate.exit_line - _EXIT_BUFFER_PX
-        # Just at threshold boundary — not past it
-        cx_safe  = threshold + 1   # should NOT trigger
-        cx_past  = threshold - 1   # should trigger
-        # Verify the math
-        self.assertGreater(cx_safe, threshold)
-        self.assertLess(cx_past, threshold)
-
-    def test_lr_exit_threshold_uses_buffer(self):
-        session = _make_session(direction="LR", line_x=600, offset=40)
-        gate = session.gate
-        # gate.exit_line = 640; trigger at cx > 640 + _EXIT_BUFFER_PX
-        threshold = gate.exit_line + _EXIT_BUFFER_PX
-        cx_safe = threshold - 1
-        cx_past = threshold + 1
-        self.assertLess(cx_safe, threshold)
-        self.assertGreater(cx_past, threshold)
-
-
-class TestReentryGuard(unittest.TestCase):
-    """Bug #6: reentry guard must not fire for workers queuing before the gate."""
-
-    def test_rl_reentry_requires_cx_right_of_entry(self):
-        """
-        RL: re-entry only when cx > entry_line + 50 (clearly back on entry side).
-        A person at cx = entry_line - 50 (approaching) must NOT clear past_gate.
-        """
-        # entry_line = 680 for RL with line_x=640, offset=40
-        # Old guard: cx > entry_line - 100 = 580 — fired for anyone right of 580
-        # New guard: cx > entry_line + 50 = 730 — only fires when clearly back
-        session = _make_session(direction="RL", line_x=640, offset=40)
-        gate = session.gate
-        # A person approaching from the right at cx=650 (between exit and entry)
-        # should NOT be considered re-entered.
-        cx_approaching = gate.entry_line - 20   # 660 — approaching, not re-entered
-        in_reentry = (gate.direction == "RL" and cx_approaching > gate.entry_line + 50)
-        self.assertFalse(in_reentry, "Approaching person should not trigger re-entry")
-
-    def test_rl_reentry_fires_when_clearly_back(self):
-        session = _make_session(direction="RL", line_x=640, offset=40)
-        gate = session.gate
-        cx_returned = gate.entry_line + 100   # well past entry → re-entered
-        in_reentry  = (gate.direction == "RL" and cx_returned > gate.entry_line + 50)
-        self.assertTrue(in_reentry)
-
-    def test_lr_reentry_requires_cx_left_of_entry(self):
-        session = _make_session(direction="LR", line_x=600, offset=40)
-        gate = session.gate
-        cx_approaching = gate.entry_line + 20
-        in_reentry = (gate.direction == "LR" and cx_approaching < gate.entry_line - 50)
-        self.assertFalse(in_reentry)
 
 
 class TestTimeoutPersons(unittest.TestCase):

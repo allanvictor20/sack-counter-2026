@@ -173,30 +173,45 @@ class SackStateMachineRegistry:
     # for a new sack within this window (typically safe at 60+ frames).
     _DELIVERED_KEEP_FRAMES: int = 90
 
+    # Frames a LOST record is kept before it is pruned.  Long enough for a
+    # ReID relink to find it, short enough that the registry does not grow
+    # for the whole session.
+    _LOST_KEEP_FRAMES: int = 300
+
     def cleanup(self, active_sids: set[int], frame_no: int) -> None:
         """
-        Mark sacks absent from *active_sids* as LOST and prune old DELIVERED.
+        Mark sacks absent from *active_sids* as LOST and prune stale records.
 
-        BUG #9 FIX: DELIVERED records are now kept for at least
+        BUG #9 FIX: DELIVERED records are kept for at least
         ``_DELIVERED_KEEP_FRAMES`` frames before deletion.  Previously they
         were pruned immediately on the first frame the tracker ID was absent,
         which meant ByteTrack could recycle the same ID for a new sack and
         the registry would silently resurrect it in DETECTED state — losing
         the DELIVERED history and risking a double-count.
 
+        LOST records are now pruned too, after ``_LOST_KEEP_FRAMES``.  Only
+        the DELIVERED branch existed before, and since nothing ever called
+        ``mark_delivered`` no record could reach that state — so in practice
+        the registry only ever grew, holding a SackRecord (with its full
+        transition history) for every tracker ID of the whole session.
+
         Args:
             active_sids: Set of sack IDs seen this frame.
             frame_no:    Current frame number.
         """
         for sid, rec in list(self._records.items()):
-            if sid not in active_sids:
-                if rec.state not in (SackState.DELIVERED, SackState.LOST):
-                    rec.transition(SackState.LOST, frame_no)
-                # Prune DELIVERED records only after the keep window expires
-                if (rec.state == SackState.DELIVERED
-                        and rec.delivered_at is not None
-                        and frame_no - rec.delivered_at >= self._DELIVERED_KEEP_FRAMES):
-                    del self._records[sid]
+            if sid in active_sids:
+                continue
+            if rec.state not in (SackState.DELIVERED, SackState.LOST):
+                rec.transition(SackState.LOST, frame_no)
+            # Prune DELIVERED records only after the keep window expires
+            if (rec.state == SackState.DELIVERED
+                    and rec.delivered_at is not None
+                    and frame_no - rec.delivered_at >= self._DELIVERED_KEEP_FRAMES):
+                del self._records[sid]
+            elif (rec.state == SackState.LOST
+                    and frame_no - rec.last_seen >= self._LOST_KEEP_FRAMES):
+                del self._records[sid]
 
     def in_state(self, state: SackState) -> list[int]:
         """Return list of sack IDs currently in *state*."""

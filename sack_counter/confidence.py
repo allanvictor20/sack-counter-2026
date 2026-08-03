@@ -38,11 +38,24 @@ class ConfidenceTracker:
     def record_ownership(self, sid: int, score: float):
         self._own[sid] = score
 
-    def record_gate_a(self, sid: int):
+    def record_approach(self, sid: int):
+        """Sack has reached the door approach zone — half crossing credit."""
         self._crs[sid] = 0.5
 
-    def record_gate_b(self, sid: int):
+    def record_crossing(self, sid: int):
+        """
+        Sack has crossed the door — full crossing credit.
+
+        Nothing used to call this (nor ``record_approach``), so the
+        crossing term — 15% of the score by default — was permanently 0
+        and every delivery_confidence was capped at 0.85.  The door-crossing
+        commit path now calls it.
+        """
         self._crs[sid] = 1.0
+
+    # Gate-era names, kept so existing call-sites and tests keep working.
+    record_gate_a = record_approach
+    record_gate_b = record_crossing
 
     def delivery_confidence(self, sid: int) -> float:
         det  = self._det.get(sid, 0.5)

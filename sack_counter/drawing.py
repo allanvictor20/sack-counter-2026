@@ -18,11 +18,17 @@ from .colors import (
     C_HUD_BG, C_ANOMALY, C_REID, C_BOX,
     C_LOW_CONF, C_MED_CONF,
 )
+from .version import VERSION_TAG as _VERSION_TAG
 from .confidence import ConfidenceTracker, confidence_class
 from .trackers import SackMotionTracker, GhostSacks
 
 # Muted grey used for ground-suppressed sacks
 _C_GROUND = (90, 90, 90)
+
+# Opacity of the extrapolated-ghost overlay.  Deliberately faint: ghosts
+# are a prediction, not a detection, and must be visually distinguishable
+# from a real box.
+_GHOST_ALPHA = 0.45
 
 
 def draw_person_box(frame, box, pid, canonical_pid,
@@ -129,18 +135,25 @@ def draw_sack_boxes(frame, raw_sacks, sack_owner, sack_scores,
         cv2.putText(frame, lbl, (x1 + 2, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1)
 
-    # Ghost overlay — only draw if ghost is owned
+    # Ghost overlay — only draw if ghost is owned.
+    # Collect first so the (expensive) full-frame copy and the blend are
+    # skipped entirely when there is nothing to draw.  The blend used to
+    # pass 0.0 as the overlay weight, which discarded every ghost that had
+    # just been drawn while still paying for the copy on every frame.
+    visible = [
+        (sid, g) for sid, g in ghosts.iter_ghosts()
+        if g.get("owner") is not None and sid not in ground_sacks
+    ]
+    if not visible:
+        return
+
     overlay = frame.copy()
-    for sid, g in ghosts.iter_ghosts():
-        if g.get("owner") is None:
-            continue
-        if sid in ground_sacks:
-            continue   # don't ghost-draw suppressed floor sacks
+    for sid, g in visible:
         gx1, gy1, gx2, gy2 = g["x1"], g["y1"], g["x2"], g["y2"]
         cv2.rectangle(overlay, (gx1, gy1), (gx2, gy2), C_GHOST, 1)
         cv2.putText(overlay, f"#{sid}~", (gx1 + 2, gy1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.28, C_GHOST, 1)
-    cv2.addWeighted(overlay, 0.0, frame, 1.0, 0, frame)
+    cv2.addWeighted(overlay, _GHOST_ALPHA, frame, 1.0 - _GHOST_ALPHA, 0, frame)
 
 
 def draw_hud(frame, confirmed,
@@ -159,7 +172,7 @@ def draw_hud(frame, confirmed,
     _n_relinks_total = n_relinks + n_reid
 
     lines = [
-        f"SACK COUNTER v20  {datetime.now().strftime('%H:%M:%S')}",
+        f"SACK COUNTER {_VERSION_TAG}  {datetime.now().strftime('%H:%M:%S')}",
         f"FPS {fps:.1f}   frame {fn}",
         "",
         f"  Sacks raw   : {_frame_stats.get('raw', 0)}",

@@ -90,7 +90,10 @@ class DeliveryState:
 class PeakState:
     """Peak-count approach-window machinery."""
     person_peak_count:  Any  = field(default_factory=lambda: defaultdict(int))
-    person_peak_used:   Any  = field(default_factory=lambda: defaultdict(lambda: False))
+    # person_peak_used was removed: nothing ever set it True, so the
+    # peak-state cleanup loop in main.py that iterated it was walking a
+    # permanently empty dict and never reclaimed anything.  That loop now
+    # iterates person_peak_count.
     person_approach_fn: dict = field(default_factory=dict)   # pid -> first approach frame
     person_load:        dict = field(default_factory=dict)   # pid -> current sack count
 
@@ -133,6 +136,10 @@ class DoorState:
     # pid -> DoorCandidateState
     persons_past_door: set  = field(default_factory=set)
     # pids that have been committed this session
+    last_commit_frame: dict = field(default_factory=dict)
+    # pid -> frame of that pid's most recent commit.  Lets
+    # check_door_reentry apply its grace period in O(1) instead of
+    # rescanning the entire delivery_log every frame.
 
 
 # ── Flat-key map: logical name → (group_attr, field_attr) ────────────────────
@@ -171,7 +178,6 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "n_anomalies":             ("delivery",   "n_anomalies"),
     # peak
     "person_peak_count":       ("peak",       "person_peak_count"),
-    "person_peak_used":        ("peak",       "person_peak_used"),
     "person_approach_fn":      ("peak",       "person_approach_fn"),
     "person_load":             ("peak",       "person_load"),
     # person position history
@@ -179,6 +185,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     # door zone (v21)
     "door_candidates":            ("door_state", "door_candidates"),
     "persons_past_door":          ("door_state", "persons_past_door"),
+    "last_commit_frame":          ("door_state", "last_commit_frame"),
     # carrier guards (formerly "guards" / AssignBugState)
     "just_evicted_sacks":      ("guards",     "just_evicted_sacks"),
     "delivered_sacks":         ("guards", "delivered_sacks"),

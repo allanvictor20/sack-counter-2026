@@ -20,8 +20,18 @@ from .embedder import DeepEmbedder
 # ─────────────────────────────────────────────────────────
 
 class SackMotionTracker:
-    def __init__(self, speed_thresh: float, speed_window: int,
-                 window: int = 10, thresh_px: int = 10):
+    """
+    Classifies a sack as stationary from its mean per-frame displacement.
+
+    Stillness is decided purely by ``speed_thresh`` over ``speed_window``
+    samples.  The constructor used to also accept ``window`` and
+    ``thresh_px`` and silently discard both, which made the
+    ``still_window`` and ``still_thresh_ratio`` config keys look like live
+    tuning knobs when they did nothing at all; they have been removed from
+    the config rather than left as decoration.
+    """
+
+    def __init__(self, speed_thresh: float, speed_window: int):
         self.speed_thresh = speed_thresh
         self.speed_window = speed_window
         self.history: dict[int, deque] = defaultdict(
@@ -220,11 +230,23 @@ class OwnershipMemory:
 # ─────────────────────────────────────────────────────────
 
 class GhostSacks:
+    """
+    Extrapolates a sack's position for a short window after it is lost.
+
+    A ghost expires after ``max_frames`` and must NOT come back.  It
+    previously did: ``update()`` recreated a ghost for any sid present in
+    ``sack_positions`` but absent from ``active_sids``, and that dict was
+    not pruned, so every sack ID ever seen got a fresh ghost the frame
+    after its previous one aged out — forever.  ``_spent`` records the IDs
+    whose occlusion window has already been used up.
+    """
+
     def __init__(self, max_frames: int):
         self.max_frames = max_frames
         self.ghosts:    dict = {}
         self._prev_pos: dict = {}
         self._velocity: dict = {}
+        self._spent:    set  = set()
 
     def record_position(self, sid: int, cx: int, cy: int):
         if sid in self._prev_pos:
@@ -234,6 +256,9 @@ class GhostSacks:
 
     def update(self, active_sids: set, sack_owner: dict,
                sack_positions: dict, sack_boxes: dict):
+        # A re-detected sack gets a fresh occlusion budget.
+        self._spent -= active_sids
+
         for sid in list(self.ghosts):
             if sid in active_sids:
                 del self.ghosts[sid]
@@ -248,9 +273,12 @@ class GhostSacks:
                 g["y2"] = int(g["y2"] + g["vy"])
                 if g["frames"] > self.max_frames:
                     del self.ghosts[sid]
+                    self._spent.add(sid)
 
         for sid, (cx, cy) in sack_positions.items():
-            if sid not in active_sids and sid not in self.ghosts:
+            if (sid not in active_sids
+                    and sid not in self.ghosts
+                    and sid not in self._spent):
                 vx, vy = self._velocity.get(sid, (0.0, 0.0))
                 x1, y1, x2, y2 = sack_boxes.get(sid, (cx, cy, cx, cy))
                 self.ghosts[sid] = {
@@ -260,6 +288,14 @@ class GhostSacks:
                     "vx": vx, "vy": vy,
                     "owner": sack_owner.get(sid),
                 }
+
+    def cleanup(self, known_sids: set):
+        """Drop position/velocity history for IDs no longer tracked at all."""
+        for sid in list(self._prev_pos):
+            if sid not in known_sids:
+                self._prev_pos.pop(sid, None)
+                self._velocity.pop(sid, None)
+                self._spent.discard(sid)
 
     def iter_ghosts(self):
         yield from self.ghosts.items()
