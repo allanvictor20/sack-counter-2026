@@ -387,7 +387,7 @@ def draw_warning_card(frame, u, x, y, w, message):
 
 
 def _draw_workers_panel(frame, u, x, y, w, workers):
-    """"Counting now" — one meter per worker, share of the session total."""
+    """\"Counting now\" — one meter per worker, share of the session total."""
     pad_x, pad_y = T.px(11, u), T.px(9, u)
     kick_scale = T.fs(10, u)
     row_scale  = T.fs(11.5, u)
