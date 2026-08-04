@@ -29,10 +29,13 @@ from collections import deque
 from .version import VERSION_TAG
 from .console import force_utf8_stdio
 from .config import load_config, save_calibration
-from .model_classes import resolve_class_indices
+from .model_classes import resolve_class_indices, unmatched_classes
 from .door_polygon import calibrate_door_polygon, DoorPolygon, _get_display_cap
 from .assignment import assign_sacks_hungarian
-from .drawing import draw_sack_boxes, draw_box_detections, draw_person_box, draw_hud
+from .drawing import (
+    draw_sack_boxes, draw_box_detections, draw_person_box, draw_hud,
+    build_event_feed,
+)
 from .pipeline import PipelineSession, SackState
 from .pipeline.person_tracker import update_persons, timeout_persons
 from .pipeline.sack_tracker import update_sacks
@@ -90,6 +93,19 @@ def run(
     CLS_PERSON   = cls_idx["person"]
     CLS_SACK     = cls_idx["sack"]
     CLS_BOX      = cls_idx["box"]
+
+    # A positional fallback is the one startup condition that can make
+    # every number on screen wrong, so the console says so in plain words
+    # instead of leaving it in the scrollback.
+    _fell_back = unmatched_classes(model.names)
+    ui_warning = None
+    if _fell_back:
+        ui_warning = (
+            "The model's class names could not be matched for "
+            + ", ".join(_fell_back)
+            + ", so the default order is being used. Confirm the counts "
+              "look right before trusting them."
+        )
 
     cap = cv2.VideoCapture(0 if source == "webcam" else source)
     if not cap.isOpened():
@@ -167,6 +183,7 @@ def run(
     fn       = 0
     fps_ring = deque(maxlen=30)
     t_prev   = time.time()
+    t_start  = t_prev
 
     # ── Display window setup (fit large video to screen) ─────
     # cv2.imshow at native resolution opens a window bigger than the
@@ -393,6 +410,7 @@ def run(
                     rec.transition(SackState.APPROACHING, fn)
 
         # ── 11. Draw ──────────────────────────────────────────
+        _elapsed = int(now - t_start)
         _draw_frame(
             frame, session, box_owner, fps, fn,
             frame_stats={
@@ -403,6 +421,9 @@ def run(
                 "crossings": n_crossings,
                 "ghosts":    len(list(session.ghost_sacks.iter_ghosts())),
             },
+            warning=ui_warning,
+            elapsed=f"{_elapsed // 60}:{_elapsed % 60:02d}",
+            src_fps=src_fps,
         )
 
         if save_output and out:
@@ -462,6 +483,9 @@ def _draw_frame(
     fps: float,
     fn: int,
     frame_stats: dict,
+    warning: str | None = None,
+    elapsed: str | None = None,
+    src_fps: float = 20.0,
 ) -> None:
     """
     Draw all overlays onto *frame* in-place.
@@ -473,6 +497,9 @@ def _draw_frame(
         fps:         Current smoothed frame rate.
         fn:          Current frame number.
         frame_stats: Counts dict (raw/boxes/still/assigned/crossings/ghosts).
+        warning:     Text for the console's "Check this" callout, or None.
+        elapsed:     Pre-formatted elapsed session time for the footer.
+        src_fps:     Source frame rate, used to timestamp the event feed.
     """
     state            = session.state
     box_pipeline     = session.box_pipeline
@@ -547,4 +574,16 @@ def _draw_frame(
         n_anomalies=state["n_anomalies"],
         n_reid=len(relinker.reid_events),
         canonical_fn=relinker.canonical,
+        total_sacks=state["total_sacks_counted"],
+        total_boxes=box_pipeline.total_counted,
+        count_label="Sacks in",
+        warning=warning,
+        elapsed=elapsed,
+        events=build_event_feed(
+            delivery_log     = state["delivery_log"],
+            box_delivery_log = box_pipeline.delivery_log,
+            anomaly_log      = state["anomaly_log"],
+            reid_events      = relinker.reid_events,
+            src_fps          = src_fps,
+        ),
     )

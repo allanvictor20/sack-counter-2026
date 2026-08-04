@@ -48,6 +48,9 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
+from sack_counter import theme as T
+from sack_counter.drawing import draw_count_block
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -139,14 +142,19 @@ def main():
         # Save annotated frame at intervals
         if fn % args.every == 0 or fn == 1:
             annotated = frame.copy()
+            u = T.unit(annotated)
+            # Same reading as the design's detection-check histogram:
+            # accent for scores that survive the cut-off, neutrals below.
             for (x1, y1, x2, y2), c in zip(boxes_xyxy, confs):
-                color = (0, 255, 0) if c >= 0.35 else \
-                        (0, 200, 255) if c >= 0.20 else (0, 0, 255)
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(annotated, f"{c:.2f}", (x1, max(y1-6, 12)),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            cv2.putText(annotated, f"Frame {fn} | {len(confs)} sacks detected (conf>={args.conf_floor})",
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+                color = T.ACCENT if c >= 0.35 else \
+                        T.ACCENT_400 if c >= 0.20 else T.NEUTRAL_400
+                T.tracked_box(annotated, x1, y1, x2, y2, u, color,
+                              f"{c:.2f}", label_ink=T.contrast_ink(color),
+                              thickness=2.5, size=10.5)
+            draw_count_block(
+                annotated, u, "Sacks seen", len(confs),
+                stats=(("Frame", fn), ("Cut-off", f"{args.conf_floor:.2f}")),
+            )
             out_path = out_dir / f"frame_{fn:05d}.jpg"
             cv2.imwrite(str(out_path), annotated)
 
