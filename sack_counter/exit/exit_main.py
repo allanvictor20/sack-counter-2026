@@ -366,29 +366,27 @@ def _detect_sacks(
 
 
 def _load_or_calibrate_door(cap, cfg: dict) -> DoorPolygon:
-    """Load door polygon from config or run interactive calibration."""
-    pts = cfg.get("door_polygon_points")
-    rpt = cfg.get("door_room_point")
-    if pts and rpt:
-        try:
-            door = DoorPolygon(points=[tuple(p) for p in pts], room_point=tuple(rpt))
-            print("  Door polygon loaded from config.")
-            return door
-        except Exception as exc:
-            print(f"  Config door polygon invalid ({exc}) — recalibrating.")
+    """Always run interactive door-polygon calibration (non-headless runs).
+
+    Like the landing zone, the door polygon is re-drawn on every
+    interactive run rather than being silently reused from a saved
+    ``calibration.yaml`` — a camera nudge between runs would otherwise
+    go unnoticed. Headless mode is unaffected: it still requires
+    ``door_polygon_points``/``door_room_point`` via ``_load_door_from_cfg``.
+    """
     return calibrate_door_polygon(cap, cfg)
 
 
 def _load_or_calibrate_landing(cap, door: DoorPolygon, cfg: dict) -> LandingZone:
-    """Load landing zone from config or run interactive calibration."""
-    pts = cfg.get("landing_zone_points")
-    if pts and len(pts) >= 3:
-        try:
-            zone = LandingZone(points=[tuple(p) for p in pts])
-            print("  Landing zone loaded from config.")
-            return zone
-        except Exception as exc:
-            print(f"  Config landing zone invalid ({exc}) — recalibrating.")
+    """Always run interactive landing-zone calibration (non-headless runs).
+
+    Unlike the door polygon, the landing zone is re-drawn on every
+    interactive run rather than being silently reused from a saved
+    ``calibration.yaml`` — a landing area clicked for one delivery layout
+    can be wrong for the next, and reusing it without the user noticing
+    was worse than asking every time. Headless mode is unaffected: it
+    still requires ``landing_zone_points`` via ``_load_landing_from_cfg``.
+    """
     return calibrate_landing_zone(cap, door_polygon=door, cfg=cfg)
 
 
