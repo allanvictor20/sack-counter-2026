@@ -31,6 +31,31 @@ _ALIASES: dict[str, tuple[str, ...]] = {
 _FALLBACK_INDEX: dict[str, int] = {"person": 0, "sack": 1, "box": 2}
 
 
+def unmatched_classes(
+    names: dict,
+    required: tuple[str, ...] = ("person", "sack", "box"),
+) -> tuple[str, ...]:
+    """
+    Which of *required* have no name match in this model.
+
+    :func:`resolve_class_indices` prints a warning and falls back to a
+    positional index for these, which is exactly the case the console
+    surfaces as "Check this".  Read-only; resolution is unaffected.
+
+    Args:
+        names:    ``model.names`` — a dict of ``{index: class_name}``.
+        required: Logical classes to check.
+
+    Returns:
+        The subset of *required* that fell back, in the given order.
+    """
+    by_name = {str(n).lower() for n in (names or {}).values()}
+    return tuple(
+        logical for logical in required
+        if not any(alias in by_name for alias in _ALIASES.get(logical, (logical,)))
+    )
+
+
 def resolve_class_indices(
     names: dict,
     required: tuple[str, ...] = ("person", "sack", "box"),

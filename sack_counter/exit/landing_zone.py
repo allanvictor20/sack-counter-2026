@@ -22,6 +22,7 @@ import cv2
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .. import theme as T
 from ..door_polygon import _get_display_cap
 
 
@@ -134,46 +135,127 @@ class LandingZone:
     def draw(
         self,
         frame,
-        color: tuple = (0, 255, 180),
-        thickness: int = 2,
+        color: tuple = None,
+        thickness: int = None,
         label: str = "LANDING ZONE",
         count: int = 0,
-        fill_alpha: float = 0.15,
+        fill_alpha: float = 0.06,
     ) -> None:
         """
         Draw the landing zone polygon with a semi-transparent fill.
 
+        Styled as the design's secondary geometry: a dashed paper outline
+        over a 6% wash, so it never competes with the accent-red door.
+
         Args:
             frame:       BGR numpy array (modified in-place).
-            color:       Polygon edge and label colour (B, G, R).
-            thickness:   Edge line thickness.
+            color:       Polygon edge and label colour (B, G, R).  Defaults
+                         to the design's paper.
+            thickness:   Edge line thickness.  Defaults to 2 px, scaled.
             label:       Text shown at centroid.
             count:       Current sack count shown next to label.
             fill_alpha:  Opacity of the polygon fill (0 = invisible).
         """
-        # Semi-transparent fill
-        overlay = frame.copy()
-        cv2.fillPoly(overlay, [self.np_points], color)
-        cv2.addWeighted(overlay, fill_alpha, frame, 1 - fill_alpha, 0, frame)
+        u = T.unit(frame)
+        if color is None:
+            color = T.PAPER
+        if thickness is None:
+            thickness = T.px(2, u)
 
-        # Border
-        cv2.polylines(frame, [self.np_points], isClosed=True,
-                      color=color, thickness=thickness)
+        T.fill_polygon(frame, self.np_points, color, alpha=fill_alpha)
+        T.dashed_polygon(frame, self.points, color, thickness,
+                         dash=T.px(10, u), gap=T.px(8, u))
 
-        # Corner dots
-        for px, py in self.points:
-            cv2.circle(frame, (px, py), 4, color, -1)
+        # Corner markers
+        marker = T.px(7, u)
+        for px_, py_ in self.points:
+            T.fill(frame, px_ - marker // 2, py_ - marker // 2,
+                   px_ - marker // 2 + marker, py_ - marker // 2 + marker,
+                   color, 1.0)
 
-        # Label
-        cx, cy = self.centroid
-        cv2.putText(
-            frame, f"{label}: {count}",
-            (cx - 60, cy),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2,
-        )
+        # Label — uppercase kicker over the count, same rhythm as the door,
+        # anchored to the zone's lowest corner so it clears the sacks in it.
+        kick_scale = T.fs(11, u)
+        num_scale  = T.fs(20, u)
+        kick_h = T.text_h(kick_scale, 1, T.FONT_BODY)
+        num_h  = T.text_h(num_scale, 2, T.FONT_HEAD)
+        anchor = max(self.points, key=lambda p: p[1])
+        lx = anchor[0] + T.px(14, u)
+        base = anchor[1] + T.px(10, u) + kick_h
+        if base + T.px(6, u) + num_h > frame.shape[0]:
+            base = anchor[1] - T.px(10, u) - num_h - T.px(6, u)
+        T.text(frame, label.upper(), lx, base, kick_scale, color, 1,
+               T.FONT_BODY, tracking=max(1.0, 11 * u * 0.12))
+        T.text(frame, str(count), lx, base + T.px(6, u) + num_h,
+               num_scale, color, 2, T.FONT_HEAD)
 
 
 # ── Calibration ────────────────────────────────────────────────
+
+def _draw_zone_calibration_overlay(display, points, error_msg) -> None:
+    """
+    Render the landing-zone calibration overlay in place.
+
+    Presentation only — the click list is read, never written.  Matches
+    the door calibration screen so the two steps feel like one flow.
+    """
+    u = T.unit(display)
+    fh, fw = display.shape[:2]
+
+    if len(points) >= 3:
+        T.fill_polygon(display, np.array(points, dtype=np.int32),
+                       T.PAPER, alpha=0.06)
+        T.dashed_polygon(display, points, T.PAPER, T.px(2, u),
+                         dash=T.px(10, u), gap=T.px(8, u))
+    else:
+        for i in range(len(points) - 1):
+            cv2.line(display, points[i], points[i + 1], T.PAPER,
+                     T.px(2, u), cv2.LINE_AA)
+
+    marker = T.px(20, u)
+    mark_scale = T.fs(13, u)
+    for i, (px_, py_) in enumerate(points):
+        T.fill(display, px_ - marker // 2, py_ - marker // 2,
+               px_ - marker // 2 + marker, py_ - marker // 2 + marker,
+               T.PAPER, 1.0)
+        digit = str(i + 1)
+        dw = T.text_w(digit, mark_scale, 1, T.FONT_HEAD)
+        dh = T.text_h(mark_scale, 1, T.FONT_HEAD)
+        T.text(display, digit, px_ - dw // 2, py_ + dh // 2,
+               mark_scale, T.INK, 1, T.FONT_HEAD)
+
+    # Header card, top-left
+    pad_x, pad_y = T.px(16, u), T.px(12, u)
+    title_scale = T.fs(15, u)
+    body_scale  = T.fs(12.5, u)
+    title_h = T.text_h(title_scale, 1, T.FONT_HEAD)
+    body_h  = T.text_h(body_scale, 1, T.FONT_BODY)
+    body = ("Click three or more corners around the floor where sacks land. "
+            f"{len(points)} marked — Enter to save.")
+    lines = T.wrap(body, T.px(330, u) - pad_x * 2, body_scale, 1,
+                   T.FONT_BODY, max_lines=3)
+    card_h = pad_y * 2 + title_h + T.px(6, u) + int(body_h * 1.5) * len(lines)
+    T.fill(display, 0, 0, T.px(330, u), card_h, T.SCRIM, T.SCRIM_ALPHA)
+    T.text(display, "Mark the landing zone", pad_x, pad_y + title_h,
+           title_scale, T.PAPER, 1, T.FONT_HEAD)
+    by = pad_y + title_h + T.px(6, u) + body_h
+    for line in lines:
+        T.text(display, line, pad_x, by, body_scale, T.NEUTRAL_400,
+               1, T.FONT_BODY)
+        by += int(body_h * 1.5)
+
+    if error_msg:
+        err_scale = T.fs(12.5, u)
+        err_h = T.text_h(err_scale, 1, T.FONT_BODY)
+        bar_h = pad_y * 2 + err_h
+        bar_w = min(fw, pad_x * 2 + T.px(3, u)
+                    + T.text_w(error_msg, err_scale, 1, T.FONT_BODY))
+        T.fill(display, 0, fh - bar_h, bar_w, fh, T.ACCENT_200, 0.94)
+        T.edge(display, 0, fh - bar_h, fh, T.ACCENT, T.px(3, u))
+        T.text(display, error_msg, T.px(3, u) + pad_x, fh - pad_y,
+               err_scale, T.ACCENT_900, 1, T.FONT_BODY)
+
+
 
 def calibrate_landing_zone(
     cap,
@@ -226,8 +308,7 @@ def calibrate_landing_zone(
 
     # Draw existing door polygon for reference
     if door_polygon is not None:
-        door_polygon.draw(clone, color=(0, 200, 255), label="DOOR", count=0,
-                          show_debug=False)
+        door_polygon.draw(clone, label="DOOR", count=0, show_debug=False)
 
     WIN = "Calibrate Landing Zone | Enter=confirm | r=reset | q=quit"
 
@@ -248,32 +329,7 @@ def calibrate_landing_zone(
     while True:
         display = clone.copy()
 
-        # Draw placed points and polygon outline
-        for i, (px, py) in enumerate(points):
-            cv2.circle(display, (px, py), 5, (0, 255, 180), -1)
-            cv2.putText(display, str(i + 1), (px + 8, py - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 180), 1)
-
-        if len(points) >= 2:
-            for i in range(len(points) - 1):
-                cv2.line(display, points[i], points[i + 1], (0, 255, 180), 2)
-        if len(points) >= 3:
-            cv2.line(display, points[-1], points[0], (0, 255, 180), 1)  # close preview
-
-        # Status
-        if len(points) < 3:
-            status = f"Click to mark landing zone corners ({len(points)}/3 min)"
-        else:
-            status = f"Landing zone ready ({len(points)} pts) — Enter to confirm"
-
-        cv2.putText(display, status, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(display, "Draw where sacks land on the corridor floor",
-                    (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
-
-        if error_msg:
-            cv2.putText(display, f"ERROR: {error_msg}", (10, 84),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        _draw_zone_calibration_overlay(display, points, error_msg)
 
         cv2.imshow(WIN, cv2.resize(display, (disp_w, disp_h)))
         key = cv2.waitKey(20) & 0xFF

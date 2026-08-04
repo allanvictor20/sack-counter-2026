@@ -15,6 +15,8 @@ import cv2
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import theme as T
+
 
 def _get_display_cap() -> tuple[int, int]:
     """
@@ -271,8 +273,8 @@ class DoorPolygon:
     def draw(
         self,
         frame,
-        color=(0, 200, 255),
-        thickness: int = 2,
+        color=None,
+        thickness: int | None = None,
         label: str = "DOOR",
         count: int = 0,
         candidates: dict = None,
@@ -281,57 +283,81 @@ class DoorPolygon:
         """
         Draw the door polygon and optional debug overlays.
 
-        New in v22:
-          - Normal vector arrow showing room direction.
-          - "CORRIDOR" and "ROOM" labels on each side.
-          - Candidate state annotations per pid.
+        Styled from the design's live view: an accent outline over a 10%
+        accent wash, a letter-spaced uppercase label, and numbered accent
+        squares on the corners matching the calibration screen.
 
         Args:
             frame      : BGR numpy array.
-            color      : Polygon edge color (B, G, R).
-            thickness  : Line thickness.
+            color      : Polygon edge color (B, G, R).  Defaults to the
+                         design accent.
+            thickness  : Line thickness.  Defaults to the design's 3 px,
+                         scaled to the frame.
             label      : Text label drawn at centroid.
             count      : Current delivery count shown next to label.
             candidates : dict[pid, DoorCandidateState] for debug overlay.
             show_debug : If True, draw normal arrow and side labels.
         """
+        u = T.unit(frame)
+        if color is None:
+            color = T.ACCENT
+        if thickness is None:
+            thickness = T.px(3, u)
+
+        T.fill_polygon(frame, self.np_points, color, alpha=0.10)
         cv2.polylines(frame, [self.np_points], isClosed=True,
-                      color=color, thickness=thickness)
+                      color=color, thickness=thickness, lineType=cv2.LINE_AA)
 
-        cv2.putText(
-            frame, f"{label}: {count}",
-            (self.centroid[0] - 40, self.centroid[1]),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
-        )
+        # Label sits above the doorway's highest corner, as in the design —
+        # the centroid belongs to the room/corridor arrow.
+        cx, cy = self.centroid
+        kick_scale = T.fs(11, u)
+        num_scale  = T.fs(20, u)
+        kick_h = T.text_h(kick_scale, 1, T.FONT_BODY)
+        num_h  = T.text_h(num_scale, 2, T.FONT_HEAD)
+        anchor = min(self.points, key=lambda p: p[1])
+        lx = anchor[0] + T.px(14, u)
+        base = anchor[1] - T.px(8, u)
+        if base - kick_h - num_h < 0:      # doorway hugs the frame top
+            base = anchor[1] + T.px(10, u) + num_h + kick_h + T.px(6, u)
+        T.text(frame, str(count), lx, base, num_scale, color, 2, T.FONT_HEAD)
+        T.text(frame, label.upper(), lx, base - num_h - T.px(6, u),
+               kick_scale, color, 1, T.FONT_BODY,
+               tracking=max(1.0, 11 * u * 0.12))
 
-        # Corner indices
-        for i, (px, py) in enumerate(self.points):
-            cv2.circle(frame, (px, py), 4, color, -1)
-            cv2.putText(frame, str(i + 1), (px + 6, py - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        # Corner markers — small filled squares, numbered in reverse ink.
+        marker = T.px(13, u)
+        ink = T.contrast_ink(color)
+        mark_scale = T.fs(11, u)
+        for i, (px_, py_) in enumerate(self.points):
+            T.fill(frame, px_ - marker // 2, py_ - marker // 2,
+                   px_ - marker // 2 + marker, py_ - marker // 2 + marker,
+                   color, 1.0)
+            digit = str(i + 1)
+            dw = T.text_w(digit, mark_scale, 1, T.FONT_HEAD)
+            dh = T.text_h(mark_scale, 1, T.FONT_HEAD)
+            T.text(frame, digit, px_ - dw // 2, py_ + dh // 2,
+                   mark_scale, ink, 1, T.FONT_HEAD)
 
         if not show_debug:
             return
 
         # Normal vector arrow  (corridor → room)
-        cx, cy = self.centroid
         arrow_end = self.room_midpt
         cv2.arrowedLine(
             frame, (cx, cy), arrow_end,
-            (0, 255, 128), 2, tipLength=0.25,
+            T.PAPER, T.px(2, u), cv2.LINE_AA, tipLength=0.25,
         )
 
-        # Side labels
-        cv2.putText(
-            frame, "ROOM",
-            (self.room_midpt[0] - 20, self.room_midpt[1]),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 128), 1,
-        )
-        cv2.putText(
-            frame, "CORRIDOR",
-            (self.corridor_midpt[0] - 35, self.corridor_midpt[1]),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1,
-        )
+        # Side labels — quiet, so they never compete with the door itself.
+        side_scale = T.fs(10, u)
+        side_track = max(1.0, 10 * u * 0.12)
+        T.text(frame, "ROOM", self.room_midpt[0] - T.px(20, u),
+               self.room_midpt[1] + T.px(18, u), side_scale, T.PAPER, 1,
+               T.FONT_BODY, tracking=side_track)
+        T.text(frame, "CORRIDOR", self.corridor_midpt[0] - T.px(35, u),
+               self.corridor_midpt[1] + T.px(18, u), side_scale,
+               T.NEUTRAL_300, 1, T.FONT_BODY, tracking=side_track)
 
         # Candidate states
         if candidates:
@@ -359,6 +385,130 @@ class DoorPolygon:
 
 
 # ── Calibration ────────────────────────────────────────────────
+
+# Plain-English prompts, one per click, from the design's calibration
+# screen.  Index = number of corners already placed.
+_CAL_HINTS = (
+    "Click the first corner of the doorway.",
+    "Click the next corner, going around the doorway.",
+    "Two more corners to go.",
+    "One more corner and the doorway is outlined.",
+    "Doorway outlined. Now click any spot inside the room, "
+    "so the system knows which way is in.",
+    "Done — press Enter to save. You will not need to do this "
+    "again for this camera.",
+)
+
+_CAL_STEPS = (
+    ("1", "Outline the doorway",
+     "Click its four corners in order. A red box marks each click."),
+    ("2", "Mark the inside", "Click one spot on the floor inside the room."),
+    ("3", "Save", "The outline is remembered until the camera moves."),
+)
+
+
+def _draw_calibration_overlay(display, points, room_point, error_msg) -> None:
+    """
+    Render the calibration screen's overlay onto *display* in place.
+
+    Purely presentational — it reads the click list and draws; the click
+    handling and validation above are untouched.
+    """
+    u = T.unit(display)
+    fh, fw = display.shape[:2]
+
+    # ── Doorway outline in progress ───────────────────────────
+    if len(points) >= 3:
+        T.fill_polygon(display, np.array(points, dtype=np.int32),
+                       T.ACCENT, alpha=0.12)
+    for i in range(len(points) - 1):
+        cv2.line(display, points[i], points[i + 1], T.ACCENT,
+                 T.px(3, u), cv2.LINE_AA)
+    if len(points) == 4:
+        cv2.line(display, points[3], points[0], T.ACCENT,
+                 T.px(3, u), cv2.LINE_AA)
+
+    marker = T.px(26, u)
+    mark_scale = T.fs(17, u)
+    for i, (px_, py_) in enumerate(points):
+        T.fill(display, px_ - marker // 2, py_ - marker // 2,
+               px_ - marker // 2 + marker, py_ - marker // 2 + marker,
+               T.ACCENT, 1.0)
+        digit = str(i + 1)
+        dw = T.text_w(digit, mark_scale, 2, T.FONT_HEAD)
+        dh = T.text_h(mark_scale, 2, T.FONT_HEAD)
+        T.text(display, digit, px_ - dw // 2, py_ + dh // 2,
+               mark_scale, T.PAPER, 2, T.FONT_HEAD)
+
+    # ── Room point ────────────────────────────────────────────
+    if room_point is not None:
+        dot = T.px(18, u)
+        T.fill(display, room_point[0] - dot // 2, room_point[1] - dot // 2,
+               room_point[0] + dot // 2, room_point[1] + dot // 2,
+               T.PAPER, 1.0)
+        T.chip(display, "INSIDE", room_point[0] + dot,
+               room_point[1] - dot // 2, u, T.PAPER, T.INK,
+               size=10.5, tracking=max(1.0, 10.5 * u * 0.12))
+
+    # ── Step list, top-left ───────────────────────────────────
+    done = len(points) if room_point is None else 5
+    active = 0 if done < 4 else (1 if done < 5 else 2)
+    pad_x, pad_y = T.px(14, u), T.px(12, u)
+    step_w = T.px(300, u)
+    title_scale = T.fs(13.5, u)
+    body_scale  = T.fs(12, u)
+    title_h = T.text_h(title_scale, 1, T.FONT_HEAD)
+    body_h  = T.text_h(body_scale, 1, T.FONT_BODY)
+
+    y = 0
+    for i, (num, title, body) in enumerate(_CAL_STEPS):
+        on = i == active
+        lines = T.wrap(body, step_w - pad_x * 2 - T.px(24, u),
+                       body_scale, 1, T.FONT_BODY, max_lines=2)
+        card_h = pad_y * 2 + title_h + T.px(5, u) + \
+            int(body_h * 1.5) * len(lines)
+        T.fill(display, 0, y, step_w, y + card_h, T.SCRIM,
+               T.SCRIM_ALPHA if on else 0.62)
+        T.edge(display, 0, y, y + card_h,
+               T.ACCENT if on else T.NEUTRAL_700, T.px(3, u))
+        nx = T.px(3, u) + pad_x
+        T.text(display, num, nx, y + pad_y + title_h, T.fs(13, u),
+               T.ACCENT if on else T.NEUTRAL_500, 1, T.FONT_HEAD)
+        tx = nx + T.px(18, u)
+        T.text(display, title, tx, y + pad_y + title_h, title_scale,
+               T.PAPER if on else T.NEUTRAL_400, 1, T.FONT_HEAD)
+        by = y + pad_y + title_h + T.px(5, u) + body_h
+        for line in lines:
+            T.text(display, line, tx, by, body_scale, T.NEUTRAL_400,
+                   1, T.FONT_BODY)
+            by += int(body_h * 1.5)
+        y += card_h + T.px(2, u)
+
+    # ── Hint bar, bottom-left ─────────────────────────────────
+    hint = _CAL_HINTS[min(done, len(_CAL_HINTS) - 1)]
+    hint_scale = T.fs(12.5, u)
+    hint_h = T.text_h(hint_scale, 1, T.FONT_BODY)
+    hpad_x, hpad_y = T.px(16, u), T.px(9, u)
+    bar_h = hpad_y * 2 + hint_h
+    bar_w = min(fw, hpad_x * 2 + T.text_w(hint, hint_scale, 1, T.FONT_BODY))
+    T.fill(display, 0, fh - bar_h, bar_w, fh, T.SCRIM, 0.85)
+    T.text(display, hint, hpad_x, fh - hpad_y, hint_scale, T.PAPER,
+           1, T.FONT_BODY)
+
+    # ── Error callout, above the hint bar ─────────────────────
+    if error_msg:
+        err_scale = T.fs(12.5, u)
+        err_h = T.text_h(err_scale, 1, T.FONT_BODY)
+        card_h = hpad_y * 2 + err_h
+        top = fh - bar_h - card_h - T.px(2, u)
+        card_w = min(fw, hpad_x * 2 + T.px(3, u)
+                     + T.text_w(error_msg, err_scale, 1, T.FONT_BODY))
+        T.fill(display, 0, top, card_w, top + card_h, T.ACCENT_200, 0.94)
+        T.edge(display, 0, top, top + card_h, T.ACCENT, T.px(3, u))
+        T.text(display, error_msg, T.px(3, u) + hpad_x,
+               top + hpad_y + err_h, err_scale, T.ACCENT_900,
+               1, T.FONT_BODY)
+
 
 def calibrate_door_polygon(cap, cfg: dict = None) -> "DoorPolygon":
     """
@@ -437,36 +587,7 @@ def calibrate_door_polygon(cap, cfg: dict = None) -> "DoorPolygon":
     while True:
         display = clone.copy()
 
-        # Draw placed points and edges
-        for i, (px, py) in enumerate(points):
-            cv2.circle(display, (px, py), 5, (0, 200, 255), -1)
-            cv2.putText(display, str(i + 1), (px + 8, py - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
-        if len(points) >= 2:
-            for i in range(len(points) - 1):
-                cv2.line(display, points[i], points[i + 1], (0, 200, 255), 2)
-        if len(points) == 4:
-            cv2.line(display, points[3], points[0], (0, 200, 255), 2)
-
-        # Room point
-        if room_point is not None:
-            cv2.circle(display, room_point, 8, (0, 255, 128), -1)
-            cv2.putText(display, "ROOM", (room_point[0] + 10, room_point[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 128), 1)
-
-        # Status / instruction
-        if len(points) < 4:
-            status = f"PHASE 1/2 — Click 4 door corners  ({len(points)}/4)"
-        elif room_point is None:
-            status = "PHASE 2/2 — Click once INSIDE the room"
-        else:
-            status = "Ready — Press Enter to confirm, r to reset"
-
-        cv2.putText(display, status, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        if error_msg:
-            cv2.putText(display, f"ERROR: {error_msg}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+        _draw_calibration_overlay(display, points, room_point, error_msg)
 
         cv2.imshow(WIN, cv2.resize(display, (disp_w, disp_h)))
         key = cv2.waitKey(20) & 0xFF
