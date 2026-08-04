@@ -266,10 +266,11 @@ def build_event_feed(delivery_log=None, box_delivery_log=None,
             "tag": "Counted", "style": _TAG_ACCENT,
         })
     for rec in (anomaly_log or [])[-limit:]:
+        pid = rec.get("person_id")
+        who = f"Worker {pid}" if pid is not None else "an unknown worker"
         events.append({
             "frame": rec.get("frame", 0),
-            "text": f"Sack {rec.get('sack_id')} was given to Worker "
-                    f"{rec.get('person_id')} with low certainty",
+            "text": f"Sack {rec.get('sack_id')} was given to {who} with low certainty",
             "tag": "Please review", "style": _TAG_OUTLINE,
         })
     for rec in (reid_events or [])[-limit:]:
