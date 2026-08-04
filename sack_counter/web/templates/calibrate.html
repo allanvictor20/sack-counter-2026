@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Calibrate{% endblock %}
+
+{% block content %}
+<div class="screen">
+
+  <header class="screen-head">
+    <div>
+      <h4 style="margin:0 0 1px">Calibrate the camera</h4>
+      <div class="screen-sub">Click on the picture to mark the doorway.
+        This is saved, so you only do it once per camera.</div>
+    </div>
+    <div class="spacer">
+      <button class="btn btn-secondary" id="undo-btn">Undo last point</button>
+      <button class="btn btn-secondary" id="clear-btn">Start over</button>
+      <button class="btn btn-primary" id="save-btn">Save and continue</button>
+    </div>
+  </header>
+
+  <div class="live-body">
+    <div class="stage">
+      <div class="cal-stage" id="cal-stage">
+        <img id="cal-frame" alt="Frame to calibrate against">
+        <svg viewBox="0 0 {{ 1600 }} {{ 900 }}" preserveAspectRatio="none" id="cal-svg">
+          <polyline id="cal-poly" points="" fill="rgba(236,48,19,0.12)"
+                    stroke="#ec3013" stroke-width="3"></polyline>
+          <g id="cal-marks"></g>
+          <g id="cal-room"></g>
+        </svg>
+        <div class="cal-hint" id="cal-hint">Load a frame to begin.</div>
+      </div>
+    </div>
+
+    <aside class="cal-aside">
+      <div class="field">
+        <label for="cal-source">Frame from</label>
+        <input class="input mono" id="cal-source"
+               value="{{ cfg.get('last_source', '') }}"
+               placeholder="warehouse_gate_b.mp4">
+      </div>
+      <button class="btn btn-secondary" id="load-frame">Load a frame</button>
+
+      <div class="hr" style="margin:2px 0"></div>
+      <h6 style="margin:0">Steps</h6>
+
+      <div class="step" id="step-1">
+        <div style="display:flex;gap:10px;align-items:baseline">
+          <span class="n mono">1</span>
+          <div><div class="title">Outline the doorway</div>
+            <div class="body">Click its four corners in order. A red box
+              marks each click.</div></div>
+        </div>
+      </div>
+      <div class="step" id="step-2">
+        <div style="display:flex;gap:10px;align-items:baseline">
+          <span class="n mono">2</span>
+          <div><div class="title">Mark the inside</div>
+            <div class="body">Click one spot on the floor inside the room.</div></div>
+        </div>
+      </div>
+      <div class="step" id="step-3">
+        <div style="display:flex;gap:10px;align-items:baseline">
+          <span class="n mono">3</span>
+          <div><div class="title">Save</div>
+            <div class="body">The outline is remembered until the camera moves.</div></div>
+        </div>
+      </div>
+
+      <div class="hr" style="margin:2px 0"></div>
+      <div class="mono" style="font-size:11.5px;color:var(--color-neutral-600);line-height:1.6"
+           id="cal-count">{{ existing|length }} point(s) marked<br>Saved to config.yaml</div>
+      <div class="err" id="cal-error"></div>
+
+      <div style="margin-top:auto;font-size:12px;color:var(--color-neutral-700);line-height:1.45">
+        Camera angle does not matter. The system works out which side of the
+        door is inside from the point you mark in step 2.
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  Console.calibrateScreen({
+    points: {{ existing|tojson }},
+    roomPoint: {{ (room_point or none)|tojson }},
+  });
+</script>
+{% endblock %}

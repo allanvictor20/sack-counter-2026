@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Setup{% endblock %}
+
+{% block content %}
+<div class="screen scroll">
+
+  <header style="padding:16px 26px;border-bottom:2px solid var(--color-divider)">
+    <h4 style="margin:0 0 2px">Start a session</h4>
+    <div class="screen-sub">Four things to set. Everything else keeps the
+      settings from your last run.</div>
+  </header>
+
+  <div class="setup-grid">
+    <div class="setup-main">
+
+      <div>
+        <h6 style="margin:0 0 10px">1 · What are we watching</h6>
+        <div style="display:flex;gap:10px;align-items:flex-end">
+          <div class="field" style="flex:1">
+            <label for="source">Video file or camera</label>
+            <input class="input mono" id="source" value="{{ cfg.get('last_source', '') }}"
+                   placeholder="warehouse_gate_b.mp4">
+          </div>
+          <button class="btn btn-secondary" id="use-webcam">Use webcam</button>
+        </div>
+        <div class="screen-sub" id="source-info" style="margin-top:6px"></div>
+      </div>
+
+      <div class="hr" style="margin:0"></div>
+
+      <div>
+        <h6 style="margin:0 0 10px">2 · What are we counting</h6>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <button class="mode-card on" data-mode="enter">
+            <div><span class="title">Sacks coming in</span><span class="flag mono">{{ cfg.get('model_path', 'best.pt') }}</span></div>
+            <div class="body">Counts a sack when the worker carrying it
+              crosses the doorway into the room.</div>
+          </button>
+          <button class="mode-card" data-mode="exit">
+            <div><span class="title">Sacks going out</span><span class="flag mono">{{ cfg.get('exit_model_path') or 'exit_best.pt' }}</span></div>
+            <div class="body">Counts a sack when it is put down and stops
+              moving inside the marked floor area.</div>
+          </button>
+        </div>
+      </div>
+
+      <div class="hr" style="margin:0"></div>
+
+      <div>
+        <h6 style="margin:0 0 4px">3 · How sure the system must be</h6>
+        <div class="screen-sub" style="margin-bottom:14px">Lower it if items
+          are being missed. Raise it if things that aren't there are being
+          counted.</div>
+        {% for key, label, hint in [
+            ('conf_sack',   'Sacks',  'Sacks are the main thing counted. 0.35 works for most cameras.'),
+            ('conf_person', 'People', 'Higher means fewer mistaken people, but a real worker may be missed.'),
+            ('conf_box',    'Boxes',  'Only used when counting sacks coming in.')] %}
+        <div class="slider-row">
+          <div class="slider-head">
+            <span style="font-size:13px">{{ label }}</span>
+            <span class="val mono" id="{{ key }}-val">{{ '%.2f'|format(cfg.get(key, 0.35)) }}</span>
+          </div>
+          <input type="range" min="0.05" max="0.95" step="0.05"
+                 id="{{ key }}" value="{{ cfg.get(key, 0.35) }}">
+          <div class="slider-hint">{{ hint }}</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="hr" style="margin:0"></div>
+
+      <div>
+        <h6 style="margin:0 0 10px">4 · Recording</h6>
+        <div style="display:flex;gap:26px;flex-wrap:wrap">
+          <label style="display:flex;gap:9px;align-items:flex-start;max-width:250px;cursor:pointer">
+            <input type="checkbox" id="save_output"
+                   style="margin-top:3px;accent-color:var(--color-accent);width:15px;height:15px">
+            <span><span style="font-size:13px">Save an annotated video</span><br>
+              <span class="slider-hint">Writes output_{{ version }}.mp4 with the boxes drawn on.</span></span>
+          </label>
+          <label style="display:flex;gap:9px;align-items:flex-start;max-width:250px;cursor:pointer">
+            <input type="checkbox" id="use_door_crossing"
+                   style="margin-top:3px;accent-color:var(--color-accent);width:15px;height:15px">
+            <span><span style="font-size:13px">Cross-check at the door</span><br>
+              <span class="slider-hint">Sacks-out only. Counts at the door as
+                well as in the landing zone, and flags any disagreement.</span></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="setup-aside">
+      <h6 style="margin:0">Before you start</h6>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        {% for c in checks %}
+        <div class="check-row">
+          <span class="check-mark mono {% if c.ok %}ok{% endif %}">{{ '✓' if c.ok else '–' }}</span>
+          <div>
+            <div style="font-size:12.5px;line-height:1.35">{{ c.label }}</div>
+            <div class="mono" style="font-size:11px;color:var(--color-neutral-600)">{{ c.detail }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="hr" style="margin:4px 0"></div>
+      <div style="font-size:12px;color:var(--color-neutral-700);line-height:1.45">
+        If the camera has been moved since it was calibrated, calibrate it
+        again — the door outline will be in the wrong place.
+      </div>
+
+      <div id="setup-error" class="err"></div>
+
+      <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-primary btn-block" id="start-btn"
+                style="justify-content:flex-start;padding:11px 14px"
+                {% if not can_start %}disabled{% endif %}>Start counting</button>
+        <a class="btn btn-secondary btn-block" href="/calibrate"
+           style="justify-content:flex-start;padding:11px 14px">Calibrate the camera first</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>Console.setupScreen();</script>
+{% endblock %}

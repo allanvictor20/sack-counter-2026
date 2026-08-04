@@ -83,7 +83,9 @@ def run_exit_counter(
     headless:         bool         = False,
     config_path:      str | None   = None,
     use_door_crossing: bool        = False,
-) -> None:
+    frame_sink:       "callable | None" = None,
+    should_stop:      "callable | None" = None,
+) -> dict:
     """
     Run the exit sack counter on *source*.
 
@@ -93,12 +95,22 @@ def run_exit_counter(
         save_output:       Write annotated video to ``exit_output.mp4``.
         headless:          Suppress the display window.
         config_path:       Path to YAML/JSON config file.
+        frame_sink:        Optional ``fn(frame, state, frame_no, fps)``
+                           called once per frame after the overlay is
+                           drawn, so a host can stream the annotated
+                           frames without a display window.
+        should_stop:       Optional ``fn() -> bool`` polled each
+                           iteration; True ends the run cleanly and the
+                           report still covers the frames processed.
         use_door_crossing: Enable door-crossing as a secondary counting
                            signal alongside the landing zone (OFF by
                            default — landing zone alone is the primary
                            and, in practice, more reliable counter; see
                            module docstring for why door-crossing was
                            demoted from primary to optional).
+
+    Returns:
+        The session summary written to the exit log.
     """
     # ── Config ────────────────────────────────────────────────
     force_utf8_stdio()
@@ -225,6 +237,8 @@ def run_exit_counter(
 
     # ── Main loop ──────────────────────────────────────────────
     while True:
+        if should_stop is not None and should_stop():
+            break
         ret, frame = cap.read()
         if not ret:
             break
@@ -294,6 +308,9 @@ def run_exit_counter(
         if save_output and out:
             out.write(frame)
 
+        if frame_sink is not None:
+            frame_sink(frame, state, fn, fps)
+
         if not headless:
             disp_frame = cv2.resize(frame, (disp_w, disp_h)) if disp_scale != 1.0 else frame
             cv2.imshow(WIN_NAME, disp_frame)
@@ -319,7 +336,18 @@ def run_exit_counter(
 
     print_exit_report(state, source, total_frames, src_fps,
                       use_door_crossing=use_door_crossing)
-    save_exit_log(state, source, total_frames, src_fps)
+    log_path = save_exit_log(state, source, total_frames, src_fps)
+
+    # Returned so a host can report on the run without re-reading the
+    # file it just wrote.  The CLI ignores this.
+    return {
+        "total_sacks_out":    state["total_sacks_out"],
+        "landing_exit_count": state["landing_exit_count"],
+        "exit_log":           state["exit_log"],
+        "discrepancy_flags":  state["discrepancy_flags"],
+        "log_path":           log_path,
+        "frames":             fn,
+    }
 
 
 # ── Private helpers ────────────────────────────────────────────
