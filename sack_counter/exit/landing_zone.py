@@ -135,8 +135,8 @@ class LandingZone:
     def draw(
         self,
         frame,
-        color: tuple = None,
-        thickness: int = None,
+        color: tuple | None = None,
+        thickness: int | None = None,
         label: str = "LANDING ZONE",
         count: int = 0,
         fill_alpha: float = 0.06,
