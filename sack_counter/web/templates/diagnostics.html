@@ -4,32 +4,67 @@
 {% block content %}
 <div class="screen scroll">
 
-  <header style="display:flex;align-items:flex-end;gap:16px;padding:18px 26px;border-bottom:2px solid var(--color-divider)">
-    <div>
-      <h4 style="margin:0 0 2px">Detection check</h4>
-      <div class="screen-sub">Run this when counts look wrong. It shows what
-        the camera model sees before any counting rules are applied.</div>
+  <header style="padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+    <div style="display:flex;align-items:flex-end;gap:16px">
+      <div>
+        <h4 style="margin:0 0 2px">Detection check</h4>
+        <div class="screen-sub">Run this when counts look wrong. It shows what
+          the camera model sees before any counting rules are applied.</div>
+      </div>
     </div>
-    <div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
-      <div class="field" style="width:240px">
+
+    <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
+      <div class="field" style="width:110px">
+        <label>Mode</label>
+        <div class="seg" id="diag-mode">
+          <label class="seg-opt">
+            <input type="radio" name="diag-mode" value="enter"
+                   {% if cfg.get('diag_mode', 'enter') != 'exit' %}checked{% endif %}>
+            Sacks in
+          </label>
+          <label class="seg-opt">
+            <input type="radio" name="diag-mode" value="exit"
+                   {% if cfg.get('diag_mode', 'enter') == 'exit' %}checked{% endif %}>
+            Sacks out
+          </label>
+        </div>
+      </div>
+
+      <div class="field" style="width:220px">
         <label for="diag-source">Video</label>
         <input class="input mono" id="diag-source"
-               value="{{ cfg.get('last_source', '') }}" placeholder="Pick a video below">
+               value="{{ cfg.get('last_source', '') }}" placeholder="video.mp4">
       </div>
-      <button class="btn btn-secondary" id="diag-browse-btn" type="button">Browse…</button>
-      <input type="file" id="diag-source-file" accept="video/*" hidden>
+
       <div class="field" style="width:110px">
         <label for="diag-every">Check every</label>
         <input class="input mono" id="diag-every" value="30">
       </div>
+
+      <div class="field" style="width:130px">
+        <label for="diag-cutoff">Cutoff (0–1)</label>
+        <input class="input mono" id="diag-cutoff" type="number"
+               step="0.05" min="0.05" max="1"
+               value="{{ '%.2f'|format(cfg.get('conf_sack', 0.35)) }}">
+      </div>
+
       <button class="btn btn-primary" id="diag-run">Run check</button>
+    </div>
+
+    <div class="screen-sub" style="margin-top:8px;font-size:11.5px">
+      Pick <strong>Sacks in</strong> to check the doorway detector
+      (<span class="mono">best.pt</span>) or <strong>Sacks out</strong> to
+      check the landing-zone detector
+      (<span class="mono">exit_best.pt</span>). <strong>Cutoff</strong> is
+      the confidence the model needs to call something a sack — lower it to
+      see what's being filtered out, raise it to see only the sure calls.
     </div>
   </header>
 
   <div id="diag-status" class="screen-sub" style="padding:12px 26px"></div>
 
   <div id="diag-result">
-    {% if not diag or not diag.status or diag.status == 'idle' %}
+    {% if not diag.result %}
     <div class="empty">
       Nothing checked yet. Point this at the video that produced the counts
       you doubt and press <strong>Run check</strong> — it samples every 30th
@@ -41,7 +76,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-  Console.diagnosticsScreen({{ diag | tojson }});
-</script>
+<script>Console.diagnosticsScreen({{ diag.result|tojson }});</script>
 {% endblock %}

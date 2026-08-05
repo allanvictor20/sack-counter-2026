@@ -152,58 +152,6 @@ def history(request: Request):
         request, "history", sessions=history_mod.list_sessions()))
 
 
-@app.get("/api/log/{log_id}")
-def download_log(log_id: str):
-    """Serve a session log file as a downloadable attachment."""
-    safe = Path(log_id).name
-    p = Path(".") / safe
-    if not p.exists() or not p.is_file():
-        raise HTTPException(404, f"No log file named {safe}")
-    return Response(
-        content=p.read_bytes(),
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
-    )
-
-
-# Allowed video extensions for /api/upload (lowercase, with dot).
-_UPLOAD_VIDEO_EXTS = {
-    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".flv", ".ts",
-}
-
-
-@app.post("/api/upload")
-async def upload_video(request: Request, filename: str = ""):
-    """Receive a video file picked from the browser's file picker, save it
-    to the working directory, and return the local filename.
-
-    Browsers hide the real path of files chosen via <input type="file">, so
-    the only way to give the backend a video it can open is to upload the
-    bytes and persist them next to the app. The returned ``path`` is what
-    the existing source-input flows expect — a relative filename the
-    backend can ``Path(...)``-resolve.
-    """
-    # Strip any client-side path components — keep only the basename.
-    name = Path(filename).name if filename else ""
-    if not name:
-        # Fall back to a generic name if the client didn't send one.
-        name = "upload.mp4"
-    if Path(name).suffix.lower() not in _UPLOAD_VIDEO_EXTS:
-        raise HTTPException(
-            400,
-            f"Only video files are accepted ({', '.join(sorted(_UPLOAD_VIDEO_EXTS))})",
-        )
-    target = Path(".") / name
-    size = 0
-    # Stream chunks straight to disk so large uploads don't blow up memory.
-    with open(target, "wb") as out:
-        async for chunk in request.stream():
-            if chunk:
-                out.write(chunk)
-                size += len(chunk)
-    return {"path": name, "size": size}
-
-
 @app.get("/diagnostics", response_class=HTMLResponse)
 def diagnostics(request: Request):
     cfg = _cfg()
@@ -418,19 +366,41 @@ async def api_diagnostics_start(request: Request):
     source = (body.get("source") or "").strip()
     if not source:
         raise HTTPException(400, "Choose a video to check first.")
-    cfg = _cfg()
-    mode = body.get("mode") or "enter"
+    cfg  = _cfg()
+    mode = str(body.get("mode") or "enter").lower()
+    if mode not in ("enter", "exit"):
+        mode = "enter"
+    # Pick the model that matches the mode: enter→best.pt, exit→exit_best.pt.
+    # The diagnostics runner also falls back to whichever file exists if the
+    # configured path doesn't, but choosing the right one here means a
+    # missing exit_best.pt surfaces as the same error the live session would
+    # raise, rather than silently running the wrong detector.
+    if mode == "exit":
+        model_path = cfg.get("exit_model_path") or "exit_best.pt"
+    else:
+        model_path = cfg.get("model_path", "best.pt")
+
+    raw_cutoff = body.get("cutoff")
+    try:
+        cutoff = float(raw_cutoff) if raw_cutoff not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "cutoff must be a number between 0 and 1.")
+    if cutoff is None:
+        cutoff = float(cfg.get("conf_sack", 0.35))
+    elif cutoff <= 0 or cutoff > 1:
+        raise HTTPException(400, "cutoff must be between 0 and 1 (exclusive 0).")
+
     try:
         RUNNER.start(
             source     = source,
-            model_path = cfg.get("model_path", "best.pt"),
+            model_path = model_path,
             every      = int(body.get("every") or 30),
-            cutoff     = float(body.get("cutoff") or cfg.get("conf_sack", 0.35)),
+            cutoff     = cutoff,
             mode       = mode,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return {"ok": True}
+    return {"ok": True, "mode": mode, "cutoff": cutoff}
 
 
 @app.get("/api/diagnostics")
@@ -460,4 +430,4 @@ def _placeholder_jpeg() -> bytes:
         ok, buf = cv2.imencode(".jpg", frame,
                                [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         _PLACEHOLDER = buf.tobytes() if ok else b""
-    return _PLACEHOLDER
+    return _PLACEHOLDER
