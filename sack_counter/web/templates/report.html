@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Report{% endblock %}
+
+{% block content %}
+<div class="screen scroll">
+{% if not report %}
+  <header style="padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+    <h4 style="margin:0 0 2px">Session report</h4>
+    <div class="screen-sub">No finished sessions yet.</div>
+  </header>
+  <div class="empty">
+    A report is written when a session ends. <a href="/setup">Start one</a>
+    and the totals, per-worker table and anomalies will appear here.
+  </div>
+{% else %}
+  <header style="display:flex;align-items:flex-end;gap:16px;padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+    <div>
+      <h4 style="margin:0 0 2px">Session report</h4>
+      <div class="mono" style="font-size:12px;color:var(--color-neutral-600)">
+        {{ report.source }} · {{ report.mode }} · {{ report.when }}
+      </div>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <a class="btn btn-secondary" href="/history">All sessions</a>
+      <button class="btn btn-primary" onclick="window.print()">Print report</button>
+    </div>
+  </header>
+
+  <div class="totals">
+    {% for k in report.totals %}
+    <div class="total">
+      <div class="label">{{ k.label }}</div>
+      <div class="value mono {% if k.accent %}accent{% endif %}">{{ k.value }}</div>
+      <div class="note">{{ k.note }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="report-grid">
+    <section class="report-main">
+      {% if report.rows %}
+      <h6 style="margin:0 0 12px">Per worker</h6>
+      <table class="table">
+        <thead><tr><th>Worker</th><th>Sacks</th><th>Boxes</th><th>Total</th>
+          <th>Avg load</th><th>Confidence</th><th></th></tr></thead>
+        <tbody>
+          {% for r in report.rows %}
+          <tr>
+            <td class="mono" style="font-family:var(--font-heading);font-weight:800">{{ r.who }}</td>
+            <td class="mono">{{ r.sacks }}</td>
+            <td class="mono">{{ r.boxes }}</td>
+            <td class="mono" style="font-weight:800">{{ r.total }}</td>
+            <td class="mono">{{ r.load }}</td>
+            <td class="mono">{{ r.conf }}</td>
+            <td><span class="tag tag-{{ r.tone }}">{{ r.tag }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div style="font-size:12px;color:var(--color-neutral-700);margin-top:10px;max-width:640px;line-height:1.5">
+        “Avg load” is how many sacks a worker carried per trip. Rows marked
+        <span class="tag tag-outline" style="font-size:10px">review</span>
+        were counted with less certainty — open the video at those moments
+        if the totals look wrong.
+      </div>
+      <div class="hr"></div>
+      {% endif %}
+
+      <h6 style="margin:0 0 12px">Sacks counted each minute</h6>
+      {% if report.trend %}
+      <div class="chart">
+        {% for b in report.trend %}
+        <div class="col">
+          <div class="v mono">{{ b.v }}</div>
+          <div class="bar {% if b.peak %}peak{% endif %}" style="height:{{ b.h }}px"></div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="chart-labels">
+        {% for b in report.trend %}<span class="mono">{{ b.label }}</span>{% endfor %}
+      </div>
+      <div style="display:flex;gap:22px;margin-top:12px;font-size:12px;color:var(--color-neutral-700)">
+        <span><span class="mono" style="font-family:var(--font-heading);font-weight:800;font-size:15px;color:var(--color-text)">{{ report.trend_mean }}</span> sacks per minute on average</span>
+        <span><span class="mono" style="font-family:var(--font-heading);font-weight:800;font-size:15px;color:var(--color-accent-700)">{{ report.trend_peak }}</span> in the busiest minute (minute {{ report.trend_peak_minute }})</span>
+      </div>
+      {% else %}
+      <div class="screen-sub">No deliveries were recorded in this session.</div>
+      {% endif %}
+    </section>
+
+    <aside class="report-aside">
+      {% if report.confidence %}
+      <div>
+        <h6 style="margin:0 0 10px">How certain the counts are</h6>
+        {% for c in report.confidence %}
+        <div class="conf-row">
+          <div class="conf-head"><span>{{ c.label }}</span><span class="mono">{{ c.n }}</span></div>
+          <div class="conf-bar"><span class="{{ c.fill }}" style="width:{{ c.pct }}"></span></div>
+          <div class="conf-note">{{ c.note }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="hr" style="margin:0"></div>
+      {% endif %}
+
+      <div>
+        <h6 style="margin:0 0 10px">Worth a look</h6>
+        {% if report.anomalies %}
+        <div style="display:flex;flex-direction:column;gap:10px">
+          {% for a in report.anomalies %}
+          <div class="anomaly">
+            <div class="at mono">{{ a.at }}</div>
+            <div class="text">{{ a.text }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="screen-sub">Nothing was flagged in this session.</div>
+        {% endif %}
+      </div>
+
+      <div style="margin-top:auto;font-size:11.5px;color:var(--color-neutral-600);line-height:1.5">
+        Saved to {{ report.log_path }}
+      </div>
+    </aside>
+  </div>
+{% endif %}
+</div>
+{% endblock %}

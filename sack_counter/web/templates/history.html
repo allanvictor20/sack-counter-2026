@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+
+{% block content %}
+<div class="screen scroll">
+
+  <header style="display:flex;align-items:center;gap:16px;padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+    <div>
+      <h4 style="margin:0 0 2px">Past sessions</h4>
+      <div class="screen-sub">Every run that finished writes a log. Open one
+        to see its full report.</div>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <div class="seg">
+        <label class="seg-opt"><input type="radio" name="hf" value="all" checked>All</label>
+        <label class="seg-opt"><input type="radio" name="hf" value="Sacks in">Sacks in</label>
+        <label class="seg-opt"><input type="radio" name="hf" value="Sacks out">Sacks out</label>
+      </div>
+      <input class="input" id="history-search" placeholder="Search by file name"
+             style="width:210px">
+    </div>
+  </header>
+
+  <div style="padding:22px 26px">
+    {% if sessions %}
+    <table class="table" id="history-table">
+      <thead><tr><th>When</th><th>Source</th><th>Counting</th><th>Sacks</th>
+        <th>Boxes</th><th>Workers</th><th>Flags</th><th></th></tr></thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr data-mode="{{ s.mode }}" data-source="{{ s.source|lower }} {{ s.id|lower }}">
+          <td class="mono">{{ s.when_iso }}</td>
+          <td class="mono">{{ s.source }}</td>
+          <td>{{ s.mode }}</td>
+          <td class="mono" style="font-weight:800">{{ s.sacks }}</td>
+          <td class="mono">{{ s.boxes }}</td>
+          <td class="mono">{{ s.workers }}</td>
+          <td><span class="tag tag-{{ s.tone }}">{{ s.tag }}</span></td>
+          <td><a class="btn btn-ghost" href="/report/{{ s.id }}"
+                 style="font-size:12px">Open report</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      No session logs found in this folder yet. When a run finishes it writes
+      <span class="mono">delivery_log_{{ version }}.json</span> (sacks in) or
+      <span class="mono">exit_log_&lt;timestamp&gt;.json</span> (sacks out),
+      and it will be listed here.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>Console.historyScreen();</script>
+{% endblock %}

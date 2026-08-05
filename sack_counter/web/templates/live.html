@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Live{% endblock %}
+
+{% block content %}
+<div class="screen">
+
+  <header class="screen-head">
+    <div>
+      <h4 style="margin:0 0 1px">Live monitoring</h4>
+      <div class="screen-sub mono" id="source-line">
+        {{ session.source or 'No session running' }}
+      </div>
+    </div>
+    <span class="tag tag-accent" id="mode-tag" style="white-space:nowrap">
+      {{ 'Counting sacks out' if session.mode == 'exit' else 'Counting sacks in' }}
+    </span>
+    <div class="spacer">
+      <a class="btn btn-secondary" href="/calibrate">Re-calibrate</a>
+      <button class="btn btn-secondary" id="stop-btn"
+              {% if not session.running %}disabled{% endif %}>End session</button>
+      <a class="btn btn-primary" href="/setup">New session</a>
+    </div>
+  </header>
+
+  <div class="live-body">
+    <div class="stage">
+      <div class="stage-inner">
+        <img class="feed" id="feed" src="/api/stream.mjpg"
+             alt="Annotated video feed">
+      </div>
+    </div>
+
+    <aside class="live-aside">
+      <div id="warning-slot">
+        {% if not calibrated %}
+          <div class="callout">
+            <h6>Check this</h6>
+            <p>This camera is not calibrated yet, so a session cannot start.
+               <a href="/calibrate">Mark the doorway</a> first — you only do
+               it once per camera.</p>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="aside-head">
+        <h6 style="margin:0 0 10px">Counting now</h6>
+        <div id="workers">
+          <div class="screen-sub">No carriers confirmed yet.</div>
+        </div>
+      </div>
+
+      <div class="aside-head">
+        <h6 style="margin:0">What just happened</h6>
+      </div>
+      <div id="events" style="flex:1 0 auto;min-height:160px;padding:4px 0">
+        <div class="event"><div class="what screen-sub">Nothing yet.</div></div>
+      </div>
+
+      <div class="aside-foot">
+        <div style="font-size:11.5px;color:var(--color-neutral-700);line-height:1.45">
+          Sacks resting on the floor before the session started are ignored.
+          Nothing is counted twice.
+        </div>
+        <a class="btn btn-secondary" href="/diagnostics">Detection check</a>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  Console.pollSession({
+    workers: document.getElementById('workers'),
+    events:  document.getElementById('events'),
+    warning: document.getElementById('warning-slot'),
+    modeTag: document.getElementById('mode-tag'),
+    source:  document.getElementById('source-line'),
+    stopBtn: document.getElementById('stop-btn'),
+  });
+  document.getElementById('stop-btn').addEventListener('click', async () => {
+    await Console.post('/api/session/stop', {});
+    window.location = '/report';
+  });
+</script>
+{% endblock %}

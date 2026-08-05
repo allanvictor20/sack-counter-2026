@@ -54,7 +54,9 @@ def run(
     save_output: bool         = False,
     headless:    bool         = False,
     config_path: str | None   = None,
-) -> None:
+    frame_sink:  "callable | None" = None,
+    should_stop: "callable | None" = None,
+) -> dict:
     """
     Run the Sack Counter pipeline on *source*.
 
@@ -66,6 +68,19 @@ def run(
         save_output: If True, writes annotated video to ``output_v23.mp4``.
         headless:    If True, suppresses the display window.
         config_path: Path to YAML or JSON config file.
+        frame_sink:  Optional ``fn(frame, session, frame_no, fps)`` called
+                     once per frame after the overlay is drawn.  Lets a
+                     host — the web console — stream the annotated frames
+                     without a display window.  The frame is the live
+                     buffer; copy it if you keep it.
+        should_stop: Optional ``fn() -> bool`` polled at the top of each
+                     iteration.  Returning True ends the run as cleanly
+                     as reaching the end of the video, so the caller gets
+                     a report for the frames that were processed.
+
+    Returns:
+        The session summary: totals, the log path, and the analytics
+        block that was written to disk.
     """
     # ── Config ────────────────────────────────────────────────
     force_utf8_stdio()
@@ -204,6 +219,8 @@ def run(
     #  Main loop
     # ════════════════════════════════════════════════════════
     while True:
+        if should_stop is not None and should_stop():
+            break
         ret, frame = cap.read()
         if not ret:
             break
@@ -429,6 +446,9 @@ def run(
         if save_output and out:
             out.write(frame)
 
+        if frame_sink is not None:
+            frame_sink(frame, session, fn, fps)
+
         if not headless:
             disp_frame = cv2.resize(frame, (disp_w, disp_h)) if disp_scale != 1.0 else frame
             cv2.imshow(WIN_NAME, disp_frame)
@@ -459,17 +479,28 @@ def run(
     )
 
     log_path = f"delivery_log_{VERSION_TAG}.json"
+    payload = {
+        # Recorded so the History screen can say which video a run was of;
+        # the log used to carry only the numbers, not what they were of.
+        "source":               source,
+        "mode":                 "enter",
+        "src_fps":              src_fps,
+        "total_frames":         fn,
+        "total_sacks":          state["total_sacks_counted"],
+        "total_boxes":          session.box_pipeline.total_counted,
+        "reid_events":          session.relinker.reid_events,
+        "deliveries":           state["delivery_log"] + session.box_pipeline.delivery_log,
+        "anomalies":            state["anomaly_log"],
+        "person_peak_delivery": state["person_peak_delivery"],
+        "analytics":            analytics_summary,
+    }
     with open(log_path, "w") as f:
-        json.dump({
-            "total_sacks":          state["total_sacks_counted"],
-            "total_boxes":          session.box_pipeline.total_counted,
-            "reid_events":          session.relinker.reid_events,
-            "deliveries":           state["delivery_log"] + session.box_pipeline.delivery_log,
-            "anomalies":            state["anomaly_log"],
-            "person_peak_delivery": state["person_peak_delivery"],
-            "analytics":            analytics_summary,
-        }, f, indent=2)
+        json.dump(payload, f, indent=2)
     print(f"  Delivery log saved -> {log_path}\n")
+
+    # Returned so a host can report on the run without re-reading the
+    # file it just wrote.  The CLI ignores this.
+    return {**payload, "log_path": log_path, "frames": fn}
 
 
 # ─────────────────────────────────────────────────────────────

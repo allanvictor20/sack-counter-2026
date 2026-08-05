@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Detection check{% endblock %}
+
+{% block content %}
+<div class="screen scroll">
+
+  <header style="display:flex;align-items:flex-end;gap:16px;padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+    <div>
+      <h4 style="margin:0 0 2px">Detection check</h4>
+      <div class="screen-sub">Run this when counts look wrong. It shows what
+        the camera model sees before any counting rules are applied.</div>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
+      <div class="field" style="width:220px">
+        <label for="diag-source">Video</label>
+        <input class="input mono" id="diag-source"
+               value="{{ cfg.get('last_source', '') }}" placeholder="video.mp4">
+      </div>
+      <div class="field" style="width:110px">
+        <label for="diag-every">Check every</label>
+        <input class="input mono" id="diag-every" value="30">
+      </div>
+      <button class="btn btn-primary" id="diag-run">Run check</button>
+    </div>
+  </header>
+
+  <div id="diag-status" class="screen-sub" style="padding:12px 26px"></div>
+
+  <div id="diag-result">
+    {% if not diag.result %}
+    <div class="empty">
+      Nothing checked yet. Point this at the video that produced the counts
+      you doubt and press <strong>Run check</strong> — it samples every 30th
+      frame, so a long video takes seconds rather than minutes.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>Console.diagnosticsScreen({{ diag.result|tojson }});</script>
+{% endblock %}
