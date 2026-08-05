@@ -1,283 +1,453 @@
 """
-history.py — Reads the JSON logs the pipeline already writes.
+web/history.py — Read and parse past session execution logs.
 
-Every finished run leaves a file behind: ``delivery_log_v23.json`` for
-entry mode, ``exit_log_<timestamp>.json`` for exit mode.  The History
-and Report screens are views over those files — nothing here runs the
-pipeline or writes anything.
+Two responsibilities:
 
-The two log shapes differ (they were written by different modes and
-never unified), so this module normalises them into one row shape the
-templates can render without knowing which mode produced them.
+1. ``list_sessions`` — produces the rows the history table iterates over
+   (``id``, ``source``, ``mode``, ``when_iso``, ``sacks``, ``boxes``,
+   ``workers``, ``tone``, ``tag``).  Every row always has every field,
+   no matter how sparse the underlying log file is.
+
+2. ``load_report`` — produces the rich dict the report page consumes:
+   the basic summary, plus the structured sections the new report.html
+   lays out (totals, per-worker rows / exit-log rows, per-minute trend,
+   confidence bars, anomalies).  Sections that have no data are empty
+   lists / ``None`` so the template's ``{% if … %}`` guards hide them.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 
-def _read(path: Path) -> dict | None:
+# ── Public API ────────────────────────────────────────────────────────
+
+def list_sessions(log_dir: Path | str = ".") -> list[dict]:
+    """List all session logs sorted by newest first."""
+    p = Path(log_dir)
+    logs = list(p.glob("delivery_log_*.json")) + list(p.glob("exit_log_*.json"))
+    sessions = []
+
+    for log_path in sorted(logs, key=lambda f: f.stat().st_mtime, reverse=True):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                data["id"] = log_path.name
+                data["log_path"] = str(log_path)
+                sessions.append(_normalize_row(data))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    return sessions
+
+
+def load_report(log_path: Path) -> dict | None:
+    """Load a specific session report log file and build the rich
+    structure the report template expects."""
+    if not log_path.exists():
+        return None
     try:
-        with path.open(encoding="utf-8") as f:
+        with open(log_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        # A half-written log from an interrupted run should drop out of
-        # the list, not take the whole History screen down.
+            data["id"] = log_path.name
+            data["log_path"] = str(log_path)
+            return _normalize_report(data)
+    except (json.JSONDecodeError, OSError):
         return None
 
 
-def _when(path: Path) -> datetime:
-    return datetime.fromtimestamp(path.stat().st_mtime)
+# ── Shared normalisation ──────────────────────────────────────────────
+
+def _detect_mode(data: dict) -> str:
+    mode_raw = str(data.get("mode", "")).lower()
+    log_id = str(data.get("id", "")).lower()
+    if "exit" in mode_raw or "out" in mode_raw or "exit_log_" in log_id:
+        return "exit"
+    return "enter"
 
 
-def list_sessions(root: str | Path = ".") -> list[dict]:
-    """
-    Every readable session log, newest first.
+def _ensure_summary(data: dict, mode: str) -> dict:
+    """Pull every metric up to the summary dict so the report template
+    can read either ``summary.x`` or the top-level ``x``."""
+    summary = data.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
 
-    Returns rows of ``{id, when, when_iso, source, mode, sacks, boxes,
-    workers, tag, tone, path}``.
-    """
-    root = Path(root)
-    rows: list[dict] = []
+    for key in ("sacks_entered", "sacks_exited", "door_count",
+                "landing_count", "landing_peak", "boxes", "workers",
+                "duration_fmt", "duration_sec", "start_time", "end_time",
+                "n_anomalies", "anomalies"):
+        if key not in summary and key in data:
+            summary[key] = data[key]
 
-    for path in sorted(root.glob("delivery_log_*.json")):
-        data = _read(path)
-        if data is None:
-            continue
-        peak = data.get("person_peak_delivery") or {}
-        anomalies = len(data.get("anomalies") or [])
-        rows.append({
-            "id":      path.name,
-            "path":    str(path),
-            "when":    _when(path),
-            "source":  data.get("source") or "—",
-            "mode":    "Sacks in",
-            "sacks":   data.get("total_sacks", 0),
-            "boxes":   data.get("total_boxes", 0),
-            "workers": len(peak),
-            "tag":     "review" if anomalies else "clean",
-            "tone":    "outline" if anomalies else "accent",
-        })
+    summary["sacks_entered"] = int(summary.get("sacks_entered", 0) or 0)
+    summary["sacks_exited"]  = int(summary.get("sacks_exited", 0)  or 0)
+    summary["door_count"]    = int(summary.get("door_count", 0)    or 0)
+    summary["landing_count"] = int(summary.get("landing_count", 0) or 0)
 
-    for path in sorted(root.glob("exit_log_*.json")):
-        data = _read(path)
-        if data is None:
-            continue
-        flags = len(data.get("discrepancy_flags") or [])
-        rows.append({
-            "id":      path.name,
-            "path":    str(path),
-            "when":    _when(path),
-            "source":  data.get("source") or "—",
-            "mode":    "Sacks out",
-            "sacks":   data.get("total_sacks_out", 0),
-            "boxes":   0,
-            "workers": 0,
-            "tag":     "counts disagreed" if flags else "clean",
-            "tone":    "outline" if flags else "accent",
-        })
+    if mode == "exit":
+        summary["total_count"] = summary.get(
+            "sacks_exited", summary["sacks_entered"])
+        summary["display_label"] = "Sacks Exited"
+    else:
+        summary["total_count"] = summary["sacks_entered"]
+        summary["display_label"] = "Sacks Entered"
 
-    rows.sort(key=lambda r: r["when"], reverse=True)
-    for row in rows:
-        # "%-d" is glibc-only, so zero-strip by hand for Windows.
-        row["when_iso"] = row["when"].strftime("%d %b, %H:%M").lstrip("0")
-    return rows
+    return summary
 
 
-def load_report(path: str | Path) -> dict | None:
-    """
-    Build the Report screen's view model from one log file.
+# ── History-row normalisation ────────────────────────────────────────
 
-    Returns None if the file cannot be read, so the route can 404
-    rather than render a page full of blanks.
-    """
-    path = Path(path)
-    data = _read(path)
-    if data is None:
-        return None
+def _normalize_row(data: dict) -> dict:
+    """Build the row the history table iterates over."""
+    if not isinstance(data, dict):
+        return _empty_row()
 
-    if "total_sacks_out" in data:
-        return _exit_report(path, data)
-    return _entry_report(path, data)
+    mode = _detect_mode(data)
+    data["mode"] = mode
+    data["summary"] = _ensure_summary(data, mode)
+    summary = data["summary"]
+
+    sacks = int(summary.get("total_count", 0) or 0)
+    boxes = int(summary.get("boxes", 0) or 0)
+    workers = int(summary.get("workers", 0) or 0)
+    review_raw = summary.get("n_anomalies",
+                 summary.get("anomalies", 0))
+    review = int(len(review_raw) if isinstance(review_raw, list)
+                 else (review_raw or 0))
+
+    data["when_iso"] = _format_when(data)
+    data["sacks"]    = sacks
+    data["boxes"]    = boxes
+    data["workers"]  = workers
+    data["review"]   = review
+
+    if review > 0:
+        data["tone"] = "outline"
+        data["tag"]  = "Review"
+    elif mode == "exit":
+        data["tone"] = "accent-2"
+        data["tag"]  = "Sacks out"
+    else:
+        data["tone"] = "accent"
+        data["tag"]  = "Sacks in"
+
+    return data
 
 
-def _entry_report(path: Path, data: dict) -> dict:
-    deliveries = data.get("deliveries") or []
-    peak       = data.get("person_peak_delivery") or {}
-    anomalies  = data.get("anomalies") or []
-    analytics  = data.get("analytics") or {}
-
-    sacks_by_worker: dict[str, int] = {}
-    boxes_by_worker: dict[str, int] = {}
-    trips_by_worker: dict[str, int] = {}
-    conf_by_worker:  dict[str, list] = {}
-
-    for rec in deliveries:
-        pid = str(rec.get("person_id"))
-        if rec.get("type") == "box":
-            boxes_by_worker[pid] = boxes_by_worker.get(pid, 0) + 1
-        else:
-            sacks_by_worker[pid] = (sacks_by_worker.get(pid, 0)
-                                    + int(rec.get("peak_count") or 1))
-        trips_by_worker[pid] = trips_by_worker.get(pid, 0) + 1
-        conf_by_worker.setdefault(pid, []).append(
-            float(rec.get("ownership_confidence",
-                          rec.get("confidence", 0.0)) or 0.0))
-
-    workers = sorted(
-        set(sacks_by_worker) | set(boxes_by_worker) | set(peak),
-        key=lambda p: -(sacks_by_worker.get(p, 0) + boxes_by_worker.get(p, 0)),
-    )
-
-    rows = []
-    for pid in workers:
-        sacks = sacks_by_worker.get(pid, 0)
-        boxes = boxes_by_worker.get(pid, 0)
-        trips = trips_by_worker.get(pid, 0)
-        confs = conf_by_worker.get(pid) or []
-        conf  = sum(confs) / len(confs) if confs else 0.0
-        rows.append({
-            "who":   f"Worker {pid}",
-            "sacks": sacks, "boxes": boxes, "total": sacks + boxes,
-            "load":  f"{sacks / trips:.1f}" if trips else "—",
-            "conf":  f"{conf:.3f}" if confs else "—",
-            "tag":   _certainty(conf, sacks + boxes),
-            "tone":  _certainty_tone(conf, sacks + boxes),
-        })
-
-    # Per-minute trend, bucketed from each delivery's frame number.
-    fps = float(data.get("src_fps") or analytics.get("src_fps") or 20.0)
-    per_minute: dict[int, int] = {}
-    for rec in deliveries:
-        if rec.get("type") == "box":
-            continue
-        minute = int(rec.get("frame", 0) / max(fps, 1.0) / 60)
-        per_minute[minute] = (per_minute.get(minute, 0)
-                              + int(rec.get("peak_count") or 1))
-    trend = _trend(per_minute)
-
-    certain = sum(1 for r in deliveries if r.get("confidence_class") == "HIGH")
-    medium  = sum(1 for r in deliveries if r.get("confidence_class") == "MEDIUM")
-    low     = len(deliveries) - certain - medium
-    total   = max(len(deliveries), 1)
-
+def _empty_row() -> dict:
     return {
-        "kind":   "enter",
-        "id":     path.name,
-        "source": data.get("source") or "—",
-        "mode":   "counting sacks in",
-        "when":   _when(path).strftime("%d %b %Y, %H:%M").lstrip("0"),
-        "totals": [
-            {"label": "Sacks counted in", "value": data.get("total_sacks", 0),
-             "note": f"across {len(deliveries)} trips", "accent": True},
-            {"label": "Boxes counted in", "value": data.get("total_boxes", 0),
-             "note": f"across {sum(boxes_by_worker.values())} trips"},
-            {"label": "Workers seen", "value": len(workers),
-             "note": f"{sum(1 for r in rows if r['total'])} carried something"},
-            {"label": "Needs a look", "value": len(anomalies),
-             "note": "counted with less certainty"},
-        ],
-        "rows":  rows,
-        "trend": trend,
-        "trend_mean": (f"{sum(per_minute.values()) / len(per_minute):.1f}"
-                       if per_minute else "0.0"),
-        "trend_peak": max(per_minute.values()) if per_minute else 0,
-        "trend_peak_minute": (max(per_minute, key=per_minute.get) + 1
-                              if per_minute else 0),
-        "confidence": [
-            {"label": "Certain", "n": certain,
-             "pct": f"{certain / total * 100:.0f}%", "fill": "accent",
-             "note": "clear view, one owner throughout"},
-            {"label": "Fairly certain", "n": medium,
-             "pct": f"{medium / total * 100:.0f}%", "fill": "accent-400",
-             "note": "brief blocking of the view"},
-            {"label": "Review", "n": low,
-             "pct": f"{max(low, 0) / total * 100:.0f}%", "fill": "neutral",
-             "note": "owner changed or the track was lost"},
-        ],
-        "anomalies": [
-            {"at": f"frame {a.get('frame', 0):,}",
-             "text": (f"Sack {a.get('sack_id')} was given to Worker "
-                      f"{a.get('person_id')} with an ownership score of "
-                      f"{a.get('ownership_confidence')}. Open the video "
-                      f"here if the totals look wrong.")}
-            for a in anomalies[:12]
-        ],
-        "log_path": str(path),
+        "id": "", "source": "", "mode": "enter",
+        "when_iso": "", "sacks": 0, "boxes": 0, "workers": 0,
+        "review": 0, "tone": "neutral", "tag": "",
+        "summary": {},
     }
 
 
-def _exit_report(path: Path, data: dict) -> dict:
-    exit_log = data.get("exit_log") or []
-    flags    = data.get("discrepancy_flags") or []
-    fps      = float(data.get("src_fps") or 20.0)
-
-    per_minute: dict[int, int] = {}
-    for rec in exit_log:
-        minute = int(rec.get("frame", 0) / max(fps, 1.0) / 60)
-        per_minute[minute] = per_minute.get(minute, 0) + 1
-
-    return {
-        "kind":   "exit",
-        "id":     path.name,
-        "source": data.get("source") or "—",
-        "mode":   "counting sacks out",
-        "when":   _when(path).strftime("%d %b %Y, %H:%M").lstrip("0"),
-        "totals": [
-            {"label": "Sacks counted out", "value": data.get("total_sacks_out", 0),
-             "note": "at the door", "accent": True},
-            {"label": "Landed in the zone", "value": data.get("landing_exit_count", 0),
-             "note": "the primary count"},
-            {"label": "Reconciled", "value": data.get("reconciled_count", 0),
-             "note": "the number to report"},
-            {"label": "Counts disagreed", "value": len(flags),
-             "note": "times during the session"},
-        ],
-        "rows":  [],
-        "trend": _trend(per_minute),
-        "trend_mean": (f"{sum(per_minute.values()) / len(per_minute):.1f}"
-                       if per_minute else "0.0"),
-        "trend_peak": max(per_minute.values()) if per_minute else 0,
-        "trend_peak_minute": (max(per_minute, key=per_minute.get) + 1
-                              if per_minute else 0),
-        "confidence": [],
-        "anomalies": [
-            {"at": f"frame {f.get('frame', 0):,}",
-             "text": (f"The door counted {f.get('door_count')} and the "
-                      f"landing zone counted {f.get('landing_count')} — "
-                      f"a difference of {f.get('diff')}.")}
-            for f in flags[:12]
-        ],
-        "duration": f"{data.get('duration_seconds', 0) / 60:.1f} min",
-        "log_path": str(path),
-    }
+def _format_when(data: dict) -> str:
+    for key in ("end_time", "start_time", "ended_at", "started_at", "timestamp"):
+        val = data.get(key)
+        if val:
+            return str(val)
+    return ""
 
 
-def _trend(per_minute: dict[int, int]) -> list[dict]:
-    """Bar data for the per-minute chart, gaps filled with zeroes."""
-    if not per_minute:
-        return []
-    peak = max(per_minute.values()) or 1
+# ── Report-page normalisation ────────────────────────────────────────
+
+def _normalize_report(data: dict) -> dict:
+    """Take a raw log dict and return the rich structure the report
+    template consumes: ``totals``, ``rows``, ``exit_log``, ``trend``,
+    ``confidence``, ``anomalies`` plus the basic metadata."""
+    if not isinstance(data, dict):
+        return {}
+
+    mode = _detect_mode(data)
+    data["mode"] = mode
+    data["summary"] = _ensure_summary(data, mode)
+    summary = data["summary"]
+
+    data["when"]      = _format_when(data)
+    data["when_iso"]  = data["when"]
+    data["totals"]    = _build_totals(data, mode)
+    data["rows"]      = _build_worker_rows(data)
+    data["exit_log"]  = _build_exit_rows(data)
+    data["trend"]     = _build_trend(data, mode)
+    data["confidence"]= _build_confidence(data)
+    data["anomalies"] = _build_anomalies(data, mode)
+
+    # Trend aggregates the template prints next to the chart.
+    if data["trend"]:
+        values = [b.get("v", 0) for b in data["trend"]]
+        peak_v = max(values) if values else 0
+        mean_v = round(sum(values) / len(values), 1) if values else 0
+        peak_idx = values.index(peak_v) if values else 0
+        data["trend_mean"] = mean_v
+        data["trend_peak"] = peak_v
+        data["trend_peak_minute"] = peak_idx + 1
+        # Mark the peak bar.
+        if 0 <= peak_idx < len(data["trend"]):
+            data["trend"][peak_idx]["peak"] = True
+
+    return data
+
+
+def _build_totals(data: dict, mode: str) -> list[dict]:
+    """Four count tiles the report header shows."""
+    s = data.get("summary", {})
+    if mode == "exit":
+        return [
+            {"label": "Sacks Exited",  "value": s.get("sacks_exited", 0),
+             "accent": True,  "note": "Sacks that left the room."},
+            {"label": "Landing count", "value": s.get("landing_count", 0),
+             "accent": False, "note": "Sacks counted in the landing zone."},
+            {"label": "Door count",    "value": s.get("door_count", 0),
+             "accent": False, "note": "Cross-checked at the door."},
+            {"label": "Peak on floor", "value": s.get("landing_peak", 0),
+             "accent": False, "note": "Most sacks resting at once."},
+        ]
     return [
-        {"label": m + 1, "v": per_minute.get(m, 0),
-         "h": round(per_minute.get(m, 0) / peak * 140),
-         "peak": per_minute.get(m, 0) == peak}
-        for m in range(max(per_minute) + 1)
+        {"label": "Sacks Entered", "value": s.get("sacks_entered", 0),
+         "accent": True,  "note": "Sacks brought into the room."},
+        {"label": "Door count",    "value": s.get("door_count", 0),
+         "accent": False, "note": "Worker crossings at the door."},
+        {"label": "Workers",       "value": s.get("workers", 0),
+         "accent": False, "note": "Distinct carriers detected."},
+        {"label": "Boxes",         "value": s.get("boxes", 0),
+         "accent": False, "note": "Boxes delivered."},
     ]
 
 
-def _certainty(conf: float, total: int) -> str:
-    if total == 0:
-        return "carried nothing"
-    return ("certain" if conf >= 0.8 else
-            "fairly certain" if conf >= 0.6 else "review")
+def _build_worker_rows(data: dict) -> list[dict]:
+    """Per-worker table for enter-mode reports.
+
+    Reads any of the common shapes the pipeline might write:
+    - ``workers`` as a list of dicts (already structured)
+    - ``per_worker`` dict keyed by worker id
+    - ``delivery_log`` flat list of events (aggregated here)
+    """
+    if not isinstance(data, dict):
+        return []
+
+    # Already-structured list of worker rows.
+    workers = data.get("workers")
+    if isinstance(workers, list) and workers and isinstance(workers[0], dict):
+        rows = []
+        for w in workers:
+            sacks = int(w.get("sacks", w.get("delivered", 0)) or 0)
+            boxes = int(w.get("boxes", 0) or 0)
+            conf  = w.get("conf", w.get("confidence"))
+            rows.append({
+                "who":   str(w.get("id", w.get("who", "—"))),
+                "sacks": sacks,
+                "boxes": boxes,
+                "total": int(w.get("total", sacks + boxes) or 0),
+                "load":  w.get("load", w.get("avg_load", "—")),
+                "conf":  f"{float(conf):.2f}" if _is_num(conf) else "—",
+                "tone":  w.get("tone", "accent"),
+                "tag":   w.get("tag",  "Counted"),
+            })
+        return rows
+
+    # per_worker dict keyed by worker id.
+    per_worker = data.get("per_worker")
+    if isinstance(per_worker, dict) and per_worker:
+        rows = []
+        for wid, w in per_worker.items():
+            if not isinstance(w, dict):
+                continue
+            sacks = int(w.get("sacks", w.get("delivered", 0)) or 0)
+            boxes = int(w.get("boxes", 0) or 0)
+            rows.append({
+                "who":   str(wid),
+                "sacks": sacks,
+                "boxes": boxes,
+                "total": int(w.get("total", sacks + boxes) or 0),
+                "load":  w.get("load", w.get("avg_load", "—")),
+                "conf":  f"{float(w['conf']):.2f}" if _is_num(w.get("conf")) else "—",
+                "tone":  w.get("tone", "accent"),
+                "tag":   w.get("tag",  "Counted"),
+            })
+        return rows
+
+    # Flat delivery_log — aggregate by worker.
+    log = data.get("delivery_log")
+    if isinstance(log, list) and log:
+        agg: dict[str, dict] = {}
+        for e in log:
+            if not isinstance(e, dict):
+                continue
+            wid = str(e.get("worker", e.get("person", e.get("who", "—"))))
+            row = agg.setdefault(wid, {"sacks": 0, "boxes": 0})
+            if e.get("kind") == "box" or e.get("box"):
+                row["boxes"] += 1
+            else:
+                row["sacks"] += 1
+        return [
+            {"who": wid, "sacks": w["sacks"], "boxes": w["boxes"],
+             "total": w["sacks"] + w["boxes"], "load": "—", "conf": "—",
+             "tone": "accent", "tag": "Counted"}
+            for wid, w in sorted(agg.items(),
+                                 key=lambda kv: -kv[1]["sacks"])
+        ]
+
+    return []
 
 
-def _certainty_tone(conf: float, total: int) -> str:
-    if total == 0:
-        return "neutral"
-    return ("accent" if conf >= 0.8 else
-            "neutral" if conf >= 0.6 else "outline")
+def _build_exit_rows(data: dict) -> list[dict]:
+    """Sacks-that-left table for exit-mode reports.
+
+    Passes through ``exit_log`` if present, otherwise builds a thin
+    list from ``summary`` so the table at least shows the count."""
+    log = data.get("exit_log")
+    if isinstance(log, list) and log:
+        rows = []
+        for r in log:
+            if not isinstance(r, dict):
+                continue
+            tag = r.get("tag", "Counted")
+            tone = r.get("tone")
+            if not tone:
+                tone = "outline" if r.get("discrepancy") else "accent"
+            rows.append({
+                "sack_id":       r.get("sack_id", r.get("id", "—")),
+                "frame":         r.get("frame", r.get("at", "—")),
+                "at":            r.get("at", r.get("frame", "—")),
+                "door_count":    r.get("door_count"),
+                "landing_count": r.get("landing_count"),
+                "tone":          tone,
+                "tag":           tag,
+            })
+        return rows
+
+    # Fallback — fabricate one row from the totals.
+    s = data.get("summary", {})
+    n = int(s.get("sacks_exited", 0) or 0)
+    if n == 0:
+        return []
+    return [{
+        "sack_id": "—", "frame": "—", "at": "—",
+        "door_count":    s.get("door_count"),
+        "landing_count": s.get("landing_count"),
+        "tone": "accent", "tag": "Counted",
+    }]
+
+
+def _build_trend(data: dict, mode: str) -> list[dict]:
+    """Per-minute bar chart.
+
+    Accepts ``trend`` as either:
+    - already-structured: [{label, v, h}, ...]
+    - a list of ints (sacks per minute)
+    - a dict {minute: count}
+    """
+    t = data.get("trend")
+    if isinstance(t, list) and t:
+        if isinstance(t[0], dict):
+            return [
+                {"label": str(b.get("label", i + 1)),
+                 "v":     int(b.get("v", 0) or 0),
+                 "h":     int(b.get("h", b.get("v", 0) * 4) or 0)}
+                for i, b in enumerate(t)
+            ]
+        # plain list of ints
+        values = [int(v or 0) for v in t]
+        peak = max(values) if values else 1
+        return [
+            {"label": str(i + 1), "v": v,
+             "h": int((v / peak) * 120) if peak else 0}
+            for i, v in enumerate(values)
+        ]
+    if isinstance(t, dict) and t:
+        items = sorted(t.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0)
+        values = [int(v or 0) for _, v in items]
+        peak = max(values) if values else 1
+        return [
+            {"label": str(k), "v": v,
+             "h": int((v / peak) * 120) if peak else 0}
+            for k, v in items
+        ]
+    return []
+
+
+def _build_confidence(data: dict) -> list[dict]:
+    """Confidence bars for the report aside.
+
+    Passes through ``confidence`` if structured, else builds three
+    rows from the conf thresholds in the summary."""
+    c = data.get("confidence")
+    if isinstance(c, list) and c and isinstance(c[0], dict):
+        return [
+            {"label": row.get("label", ""),
+             "n":     row.get("n", "—"),
+             "pct":   row.get("pct", "0%"),
+             "fill":  row.get("fill", ""),
+             "note":  row.get("note", "")}
+            for row in c
+        ]
+
+    s = data.get("summary", {})
+    rows = []
+    for key, label, note in (
+        ("conf_sack",   "Sacks",  "Main counted object."),
+        ("conf_person", "People", "Worker detections."),
+        ("conf_box",    "Boxes",  "Box deliveries."),
+    ):
+        val = s.get(key) or data.get(key)
+        if _is_num(val):
+            pct = int(float(val) * 100)
+            rows.append({
+                "label": label, "n": f"{float(val):.2f}",
+                "pct": f"{pct}%", "fill": "accent-400" if pct < 50 else "",
+                "note": note,
+            })
+    return rows
+
+
+def _build_anomalies(data: dict, mode: str) -> list[dict]:
+    """Flagged events for the report aside.
+
+    Prefers ``anomalies`` if structured, else falls back to
+    ``anomaly_log`` (enter mode) or ``discrepancy_flags`` (exit mode)."""
+    a = data.get("anomalies")
+    if isinstance(a, list) and a and isinstance(a[0], dict):
+        return [
+            {"at":   str(r.get("at", r.get("time", r.get("frame", "—")))),
+             "text": str(r.get("text", r.get("message", r.get("reason", ""))))}
+            for r in a
+        ]
+
+    # Enter mode: anomaly_log is a list of dicts.
+    log = data.get("anomaly_log")
+    if isinstance(log, list) and log:
+        return [
+            {"at":   str(r.get("at", r.get("time", r.get("frame", "—")))),
+             "text": str(r.get("text", r.get("reason", r.get("message", ""))))}
+            for r in log if isinstance(r, dict)
+        ]
+
+    # Exit mode: discrepancy_flags carry door_count vs landing_count.
+    flags = data.get("discrepancy_flags")
+    if isinstance(flags, list) and flags:
+        out = []
+        for r in flags:
+            if not isinstance(r, dict):
+                continue
+            door    = r.get("door_count", "?")
+            landing = r.get("landing_count", "?")
+            frame   = r.get("frame", r.get("at", "—"))
+            out.append({
+                "at":   f"frame {frame}",
+                "text": (f"Door counted {door} sacks but the landing zone "
+                         f"counted {landing}. Check the video around this "
+                         f"point before trusting the total."),
+            })
+        return out
+
+    return []
+
+
+# ── Utils ─────────────────────────────────────────────────────────────
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)

@@ -23,7 +23,7 @@ POST /api/session/start|stop      session lifecycle
 GET  /api/session                 live snapshot (polled)
 GET  /api/stream.mjpg             annotated frames
 GET  /api/frame.jpg               one frame, for calibration
-POST /api/calibration             save door polygon + room point
+POST /api/calibration             save door polygon + room point, or landing zone
 POST /api/settings                save confidence thresholds
 POST /api/diagnostics/start       run a detection check
 GET  /api/diagnostics             its result
@@ -90,6 +90,7 @@ def live(request: Request):
 def setup(request: Request):
     cfg = _cfg()
     door = cfg.get("door_polygon_points")
+    landing = cfg.get("landing_zone_points")
     model = Path(cfg.get("model_path", "best.pt"))
     exit_model = Path(cfg.get("exit_model_path") or "exit_best.pt")
     checks = [
@@ -98,6 +99,9 @@ def setup(request: Request):
         {"ok": bool(door), "label": "Camera calibrated",
          "detail": (f"{len(door)} corners marked" if door
                     else "not calibrated yet")},
+        {"ok": bool(landing), "label": "Landing zone marked",
+         "detail": (f"{len(landing)} points marked" if landing
+                    else "only needed when counting sacks out")},
         {"ok": True, "label": "Settings loaded",
          "detail": f"config.yaml · {len(cfg)} settings"},
         {"ok": exit_model.exists(), "label": "Floor-sack model",
@@ -116,7 +120,8 @@ def calibrate(request: Request):
     return TEMPLATES.TemplateResponse(request, "calibrate.html", _shell(
         request, "calibrate", cfg=cfg,
         existing=cfg.get("door_polygon_points") or [],
-        room_point=cfg.get("door_room_point"),
+        room_point=cfg.get("door_room_point") or None,
+        existing_landing=cfg.get("landing_zone_points") or [],
     ))
 
 
@@ -147,6 +152,58 @@ def history(request: Request):
         request, "history", sessions=history_mod.list_sessions()))
 
 
+@app.get("/api/log/{log_id}")
+def download_log(log_id: str):
+    """Serve a session log file as a downloadable attachment."""
+    safe = Path(log_id).name
+    p = Path(".") / safe
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, f"No log file named {safe}")
+    return Response(
+        content=p.read_bytes(),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
+
+
+# Allowed video extensions for /api/upload (lowercase, with dot).
+_UPLOAD_VIDEO_EXTS = {
+    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".flv", ".ts",
+}
+
+
+@app.post("/api/upload")
+async def upload_video(request: Request, filename: str = ""):
+    """Receive a video file picked from the browser's file picker, save it
+    to the working directory, and return the local filename.
+
+    Browsers hide the real path of files chosen via <input type="file">, so
+    the only way to give the backend a video it can open is to upload the
+    bytes and persist them next to the app. The returned ``path`` is what
+    the existing source-input flows expect — a relative filename the
+    backend can ``Path(...)``-resolve.
+    """
+    # Strip any client-side path components — keep only the basename.
+    name = Path(filename).name if filename else ""
+    if not name:
+        # Fall back to a generic name if the client didn't send one.
+        name = "upload.mp4"
+    if Path(name).suffix.lower() not in _UPLOAD_VIDEO_EXTS:
+        raise HTTPException(
+            400,
+            f"Only video files are accepted ({', '.join(sorted(_UPLOAD_VIDEO_EXTS))})",
+        )
+    target = Path(".") / name
+    size = 0
+    # Stream chunks straight to disk so large uploads don't blow up memory.
+    with open(target, "wb") as out:
+        async for chunk in request.stream():
+            if chunk:
+                out.write(chunk)
+                size += len(chunk)
+    return {"path": name, "size": size}
+
+
 @app.get("/diagnostics", response_class=HTMLResponse)
 def diagnostics(request: Request):
     cfg = _cfg()
@@ -170,13 +227,19 @@ async def api_session_start(request: Request):
         raise HTTPException(
             400, "This camera is not calibrated yet — mark the doorway first.")
 
+    mode = body.get("mode") or "enter"
+    if mode == "exit" and not cfg.get("landing_zone_points"):
+        raise HTTPException(
+            400, "The landing zone isn't marked yet — counting sacks out "
+                 "needs it calibrated first.")
+
     def _conf(key):
         value = body.get(key)
         return float(value) if value not in (None, "") else None
 
     options = SessionOptions(
         source            = source,
-        mode              = body.get("mode") or "enter",
+        mode              = mode,
         conf_sack         = _conf("conf_sack"),
         conf_person       = _conf("conf_person"),
         conf_box          = _conf("conf_box"),
@@ -281,6 +344,35 @@ def api_source_info(source: str):
 @app.post("/api/calibration")
 async def api_calibration(request: Request):
     body   = await request.json()
+    target = body.get("target") or "door"
+
+    if target == "landing":
+        pts = body.get("landing_points") or []
+        if len(pts) < 3:
+            raise HTTPException(
+                400, "Mark at least three points around the landing area.")
+        if len(pts) > 8:
+            raise HTTPException(
+                400, "That's too many points — eight is the most the "
+                     "landing zone can have.")
+
+        # Same reasoning as the door polygon below: validate the shape
+        # before saving, so a degenerate polygon (e.g. collinear points)
+        # is refused here rather than surfacing as a cryptic error at
+        # the start of the next session.
+        from ..exit.landing_zone import LandingZone
+        try:
+            zone = LandingZone(
+                points=[(int(p[0]), int(p[1])) for p in pts])
+        except ValueError as exc:
+            raise HTTPException(400, f"{exc}") from exc
+
+        cfg = _cfg()
+        cfg["landing_zone_points"] = zone.points
+        save_calibration(cfg)
+        return {"ok": True, "target": "landing", "points": zone.points,
+                "centroid": zone.centroid}
+
     points = body.get("points") or []
     room   = body.get("room_point")
     if len(points) != 4:
@@ -302,8 +394,8 @@ async def api_calibration(request: Request):
     cfg["door_polygon_points"] = door.points
     cfg["door_room_point"]     = door.room_point
     save_calibration(cfg)
-    return {"ok": True, "points": door.points, "room_point": door.room_point,
-            "centroid": door.centroid}
+    return {"ok": True, "target": "door", "points": door.points,
+            "room_point": door.room_point, "centroid": door.centroid}
 
 
 @app.post("/api/settings")
@@ -327,12 +419,14 @@ async def api_diagnostics_start(request: Request):
     if not source:
         raise HTTPException(400, "Choose a video to check first.")
     cfg = _cfg()
+    mode = body.get("mode") or "enter"
     try:
         RUNNER.start(
             source     = source,
             model_path = cfg.get("model_path", "best.pt"),
             every      = int(body.get("every") or 30),
             cutoff     = float(body.get("cutoff") or cfg.get("conf_sack", 0.35)),
+            mode       = mode,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc

@@ -1,129 +1,423 @@
 {% extends "base.html" %}
-{% block title %}Report{% endblock %}
+{% block title %}Report — {{ report.id if report else 'No Session' }}{% endblock %}
 
 {% block content %}
 <div class="screen scroll">
-{% if not report %}
-  <header style="padding:18px 26px;border-bottom:2px solid var(--color-divider)">
-    <h4 style="margin:0 0 2px">Session report</h4>
-    <div class="screen-sub">No finished sessions yet.</div>
-  </header>
-  <div class="empty">
-    A report is written when a session ends. <a href="/setup">Start one</a>
-    and the totals, per-worker table and anomalies will appear here.
-  </div>
-{% else %}
-  <header style="display:flex;align-items:flex-end;gap:16px;padding:18px 26px;border-bottom:2px solid var(--color-divider)">
+
+  {% set mode_raw = (report.get('mode') if report else '') | string | lower %}
+  {% set is_exit = 'exit' in mode_raw or 'out' in mode_raw %}
+  {% set summary = (report.get('summary') if report else None) or (report if report else {}) %}
+  {% set totals = (report.get('totals') if report else None) or [] %}
+  {% set trend = (report.get('trend') if report else None) or [] %}
+  {% set rows = (report.get('rows') if report else None) or [] %}
+  {% set exit_log = (report.get('exit_log') if report else None) or [] %}
+  {% set confidence = (report.get('confidence') if report else None) or [] %}
+  {% set anomalies = (report.get('anomalies') if report else None) or [] %}
+
+  <header class="screen-head">
     <div>
       <h4 style="margin:0 0 2px">Session report</h4>
-      <div class="mono" style="font-size:12px;color:var(--color-neutral-600)">
-        {{ report.source }} · {{ report.mode }} · {{ report.when }}
+      <div class="screen-sub">
+        {% if report %}
+          {{ report.id }} &middot; {{ report.get('source', '') }} &middot; Mode:
+          <strong>
+            {% if is_exit %}COUNTING SACKS OUT{% else %}COUNTING SACKS IN{% endif %}
+          </strong>
+        {% else %}
+          No session logs recorded yet. Run a session from Setup to generate a report.
+        {% endif %}
       </div>
     </div>
-    <div style="margin-left:auto;display:flex;gap:8px">
+    {% if report %}
+    <div class="spacer">
+      <a class="btn btn-secondary" href="/api/log/{{ report.id }}" download>Download log</a>
       <a class="btn btn-secondary" href="/history">All sessions</a>
-      <button class="btn btn-primary" onclick="window.print()">Print report</button>
     </div>
+    {% endif %}
   </header>
 
-  <div class="totals">
-    {% for k in report.totals %}
-    <div class="total">
-      <div class="label">{{ k.label }}</div>
-      <div class="value mono {% if k.accent %}accent{% endif %}">{{ k.value }}</div>
-      <div class="note">{{ k.note }}</div>
-    </div>
-    {% endfor %}
+  {% if not report %}
+  <div class="empty-state">
+    <p>No report loaded. Pick a session from the History screen.</p>
   </div>
+  {% else %}
 
-  <div class="report-grid">
-    <section class="report-main">
-      {% if report.rows %}
-      <h6 style="margin:0 0 12px">Per worker</h6>
-      <table class="table">
-        <thead><tr><th>Worker</th><th>Sacks</th><th>Boxes</th><th>Total</th>
-          <th>Avg load</th><th>Confidence</th><th></th></tr></thead>
-        <tbody>
-          {% for r in report.rows %}
-          <tr>
-            <td class="mono" style="font-family:var(--font-heading);font-weight:800">{{ r.who }}</td>
-            <td class="mono">{{ r.sacks }}</td>
-            <td class="mono">{{ r.boxes }}</td>
-            <td class="mono" style="font-weight:800">{{ r.total }}</td>
-            <td class="mono">{{ r.load }}</td>
-            <td class="mono">{{ r.conf }}</td>
-            <td><span class="tag tag-{{ r.tone }}">{{ r.tag }}</span></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div style="font-size:12px;color:var(--color-neutral-700);margin-top:10px;max-width:640px;line-height:1.5">
-        “Avg load” is how many sacks a worker carried per trip. Rows marked
-        <span class="tag tag-outline" style="font-size:10px">review</span>
-        were counted with less certainty — open the video at those moments
-        if the totals look wrong.
+  {# ── KPI tiles ──────────────────────────────────────────────── #}
+  {% if totals %}
+  <section class="kpi-row">
+    {% for t in totals %}
+      <div class="kpi-tile {{ 'kpi-danger' if (t.get('label','')|lower).startswith('disagree') else ('kpi-success' if (t.get('label','')|lower).startswith('reconcil') else ('kpi-accent' if t.get('accent') else '')) }}">
+        <div class="kpi-label">{{ t.get('label', '—') }}</div>
+        <div class="kpi-value">{{ t.get('value', 0) }}</div>
+        {% if t.get('note') %}<div class="kpi-note">{{ t.get('note') }}</div>{% endif %}
       </div>
-      <div class="hr"></div>
-      {% endif %}
+    {% endfor %}
+  </section>
+  {% else %}
+  {# Fallback totals when history.py didn't synthesize them #}
+  <section class="kpi-row">
+    {% if is_exit %}
+      <div class="kpi-tile kpi-accent">
+        <div class="kpi-label">Sacks Counted Out</div>
+        <div class="kpi-value">{{ summary.get('sacks_exited', summary.get('door_count', 0)) }}</div>
+        <div class="kpi-note">at the door</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label">Landed in the Zone</div>
+        <div class="kpi-value">{{ summary.get('landing_count', 0) }}</div>
+        <div class="kpi-note">the primary count</div>
+      </div>
+      <div class="kpi-tile kpi-success">
+        <div class="kpi-label">Reconciled</div>
+        <div class="kpi-value">{{ [summary.get('sacks_exited',0), summary.get('landing_count',0)] | min }}</div>
+        <div class="kpi-note">the number to report</div>
+      </div>
+      <div class="kpi-tile {{ 'kpi-danger' if anomalies else '' }}">
+        <div class="kpi-label">Counts Disagree</div>
+        <div class="kpi-value">{{ anomalies | length }}</div>
+        <div class="kpi-note">times during the session</div>
+      </div>
+    {% else %}
+      <div class="kpi-tile kpi-accent">
+        <div class="kpi-label">Sacks Entered</div>
+        <div class="kpi-value">{{ summary.get('sacks_entered', 0) }}</div>
+        <div class="kpi-note">brought into the room</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label">Door Crossings</div>
+        <div class="kpi-value">{{ summary.get('door_count', 0) }}</div>
+        <div class="kpi-note">worker trips logged</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label">Workers</div>
+        <div class="kpi-value">{{ summary.get('workers', 0) }}</div>
+        <div class="kpi-note">distinct carriers</div>
+      </div>
+      <div class="kpi-tile {{ 'kpi-danger' if anomalies else '' }}">
+        <div class="kpi-label">Anomalies</div>
+        <div class="kpi-value">{{ anomalies | length }}</div>
+        <div class="kpi-note">flagged for review</div>
+      </div>
+    {% endif %}
+  </section>
+  {% endif %}
 
-      <h6 style="margin:0 0 12px">Sacks counted each minute</h6>
-      {% if report.trend %}
-      <div class="chart">
-        {% for b in report.trend %}
-        <div class="col">
-          <div class="v mono">{{ b.v }}</div>
-          <div class="bar {% if b.peak %}peak{% endif %}" style="height:{{ b.h }}px"></div>
+  {# ── Main two-column body ──────────────────────────────────── #}
+  <div class="report-layout">
+
+    {# ── Left column: trend chart + table ── #}
+    <div class="report-col-main">
+
+      {% if trend %}
+      <section class="report-card">
+        <div class="card-head">
+          <h5>{% if is_exit %}Sacks leaving each minute{% else %}Sacks entering each minute{% endif %}</h5>
+          <div class="card-meta">
+            <span><strong>{{ report.get('trend_mean', 0) }}</strong> /min avg</span>
+            <span class="dot-sep">·</span>
+            <span>peak <strong>{{ report.get('trend_peak', 0) }}</strong> at min {{ report.get('trend_peak_minute', 1) }}</span>
+          </div>
         </div>
-        {% endfor %}
-      </div>
-      <div class="chart-labels">
-        {% for b in report.trend %}<span class="mono">{{ b.label }}</span>{% endfor %}
-      </div>
-      <div style="display:flex;gap:22px;margin-top:12px;font-size:12px;color:var(--color-neutral-700)">
-        <span><span class="mono" style="font-family:var(--font-heading);font-weight:800;font-size:15px;color:var(--color-text)">{{ report.trend_mean }}</span> sacks per minute on average</span>
-        <span><span class="mono" style="font-family:var(--font-heading);font-weight:800;font-size:15px;color:var(--color-accent-700)">{{ report.trend_peak }}</span> in the busiest minute (minute {{ report.trend_peak_minute }})</span>
-      </div>
+        <div class="trend-wrap"
+             data-trend='{{ trend | tojson }}'
+             data-mean="{{ report.get('trend_mean', 0) }}"
+             data-peak="{{ report.get('trend_peak', 0) }}"
+             data-peak-minute="{{ report.get('trend_peak_minute', 1) }}">
+          <svg class="trend-svg" viewBox="0 0 720 280" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="trend-empty" hidden>No per-minute data was recorded for this session.</div>
+        </div>
+        <div class="trend-legend">
+          <span class="lg-item"><span class="lg-swatch lg-bar"></span>Sacks per minute</span>
+          <span class="lg-item"><span class="lg-swatch lg-peak"></span>Busiest minute</span>
+          <span class="lg-item"><span class="lg-swatch lg-mean"></span>Session average</span>
+        </div>
+      </section>
       {% else %}
-      <div class="screen-sub">No deliveries were recorded in this session.</div>
+      <section class="report-card">
+        <div class="card-head"><h5>{% if is_exit %}Sacks leaving each minute{% else %}Sacks entering each minute{% endif %}</h5></div>
+        <div class="trend-empty">No per-minute trend was recorded for this session.</div>
+      </section>
       {% endif %}
-    </section>
 
-    <aside class="report-aside">
-      {% if report.confidence %}
-      <div>
-        <h6 style="margin:0 0 10px">How certain the counts are</h6>
-        {% for c in report.confidence %}
-        <div class="conf-row">
-          <div class="conf-head"><span>{{ c.label }}</span><span class="mono">{{ c.n }}</span></div>
-          <div class="conf-bar"><span class="{{ c.fill }}" style="width:{{ c.pct }}"></span></div>
-          <div class="conf-note">{{ c.note }}</div>
+      {# ── Per-worker table (enter mode) ── #}
+      {% if not is_exit and rows %}
+      <section class="report-card">
+        <div class="card-head">
+          <h5>Per-worker breakdown</h5>
+          <div class="card-meta">{{ rows | length }} worker{{ 's' if rows | length != 1 else '' }}</div>
         </div>
-        {% endfor %}
-      </div>
-      <div class="hr" style="margin:0"></div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th class="num">Sacks</th>
+                <th class="num">Boxes</th>
+                <th class="num">Total</th>
+                <th>Avg load</th>
+                <th>Conf.</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in rows %}
+              <tr>
+                <td class="mono">{{ r.get('who', '—') }}</td>
+                <td class="num">{{ r.get('sacks', 0) }}</td>
+                <td class="num">{{ r.get('boxes', 0) }}</td>
+                <td class="num"><strong>{{ r.get('total', 0) }}</strong></td>
+                <td>{{ r.get('load', '—') }}</td>
+                <td class="mono">{{ r.get('conf', '—') }}</td>
+                <td>
+                  <span class="pill pill-{{ r.get('tone', 'accent') }}">{{ r.get('tag', 'Counted') }}</span>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
       {% endif %}
 
-      <div>
-        <h6 style="margin:0 0 10px">Worth a look</h6>
-        {% if report.anomalies %}
-        <div style="display:flex;flex-direction:column;gap:10px">
-          {% for a in report.anomalies %}
-          <div class="anomaly">
-            <div class="at mono">{{ a.at }}</div>
-            <div class="text">{{ a.text }}</div>
+      {# ── Exit log table (exit mode) ── #}
+      {% if is_exit and exit_log %}
+      <section class="report-card">
+        <div class="card-head">
+          <h5>Sacks that left the room</h5>
+          <div class="card-meta">{{ exit_log | length }} sack{{ 's' if exit_log | length != 1 else '' }} recorded</div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Sack ID</th>
+                <th>Frame / time</th>
+                <th class="num">Door count</th>
+                <th class="num">Landing count</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in exit_log %}
+              <tr>
+                <td class="mono">{{ r.get('sack_id', '—') }}</td>
+                <td class="mono">{{ r.get('at', r.get('frame', '—')) }}</td>
+                <td class="num">{{ r.get('door_count') if r.get('door_count') is not none else '—' }}</td>
+                <td class="num">{{ r.get('landing_count') if r.get('landing_count') is not none else '—' }}</td>
+                <td>
+                  <span class="pill pill-{{ r.get('tone', 'accent') }}">{{ r.get('tag', 'Counted') }}</span>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if (not is_exit and not rows) or (is_exit and not exit_log) %}
+      <section class="report-card">
+        <div class="card-head">
+          <h5>{% if is_exit %}Sacks that left the room{% else %}Per-worker breakdown{% endif %}</h5>
+        </div>
+        <div class="trend-empty">
+          {% if is_exit %}
+            No individual sack events were logged. The summary counts above are the totals recorded at the door and landing zone.
+          {% else %}
+            No per-worker breakdown was recorded for this session.
+          {% endif %}
+        </div>
+      </section>
+      {% endif %}
+
+    </div>{# /report-col-main #}
+
+    {# ── Right column: comparison + confidence + anomalies ── #}
+    <aside class="report-col-aside">
+
+      {# ── Flagged events ── #}
+      <section class="report-card compare-card">
+        <div class="card-head">
+          <h5>Flagged events</h5>
+          {% if anomalies %}
+            <span class="pill pill-outline">{{ anomalies | length }} flagged</span>
+          {% else %}
+            <span class="pill pill-ok">Verified</span>
+          {% endif %}
+        </div>
+
+        {% if anomalies %}
+        <div class="discrepancy-list">
+          {% for a in anomalies[:12] %}
+          <div class="dl-item">
+            <div class="dl-at mono">{{ a.get('at', '—') }}</div>
+            <div class="dl-text">{{ a.get('text', '') }}</div>
+          </div>
+          {% endfor %}
+          {% if anomalies | length > 12 %}
+          <div class="dl-more">+ {{ anomalies | length - 12 }} more — download the log for the full list.</div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="compare-empty">
+          No door/landing discrepancies were flagged.
+        </div>
+        {% endif %}
+      </section>
+
+      {# ── Confidence bars ── #}
+      {% if confidence %}
+      <section class="report-card">
+        <div class="card-head"><h5>Detection confidence</h5></div>
+        <div class="conf-list">
+          {% for c in confidence %}
+          <div class="conf-row">
+            <div class="conf-head">
+              <span>{{ c.get('label', '—') }}</span>
+              <span class="conf-pct mono">{{ c.get('pct', '—') }}</span>
+            </div>
+            <div class="conf-bar">
+              <span data-fill="{{ c.get('fill', '') }}" data-pct="{{ c.get('pct', '0%') | replace('%', '') | trim }}"></span>
+            </div>
+            {% if c.get('note') %}<div class="conf-note">{{ c.get('note') }}</div>{% endif %}
           </div>
           {% endfor %}
         </div>
-        {% else %}
-        <div class="screen-sub">Nothing was flagged in this session.</div>
-        {% endif %}
-      </div>
+      </section>
+      {% endif %}
 
-      <div style="margin-top:auto;font-size:11.5px;color:var(--color-neutral-600);line-height:1.5">
-        Saved to {{ report.log_path }}
-      </div>
+      {# ── Session summary details ── #}
+      <section class="report-card">
+        <div class="card-head"><h5>Session details</h5></div>
+        <div class="report-details">
+          <div class="detail-row">
+            <span class="detail-key">Log file</span>
+            <span class="detail-val mono">{{ report.id }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-key">Source</span>
+            <span class="detail-val mono">{{ report.get('source', 'N/A') }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-key">Mode</span>
+            <span class="detail-val">{% if is_exit %}Counting sacks out{% else %}Counting sacks in{% endif %}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-key">Started</span>
+            <span class="detail-val">{{ report.get('start_time', summary.get('start_time', 'N/A')) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-key">Ended</span>
+            <span class="detail-val">{{ report.get('end_time', summary.get('end_time', 'N/A')) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-key">Duration</span>
+            <span class="detail-val mono">{{ summary.get('duration_fmt', '—') }}</span>
+          </div>
+        </div>
+      </section>
+
     </aside>
-  </div>
-{% endif %}
+
+  </div>{# /report-layout #}
+
+  {% endif %}{# /if not report #}
+
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var wrap = document.querySelector('.trend-wrap');
+  if (!wrap) return;
+  var svg = wrap.querySelector('.trend-svg');
+  var empty = wrap.querySelector('.trend-empty');
+  var raw;
+  try { raw = JSON.parse(wrap.dataset.trend || '[]'); } catch (e) { raw = []; }
+  var mean = parseFloat(wrap.dataset.mean || '0');
+  var peak = parseFloat(wrap.dataset.peak || '0');
+  var peakMinute = parseInt(wrap.dataset.peakMinute || '1', 10);
+  if (!raw || !raw.length) {
+    if (svg) svg.style.display = 'none';
+    if (empty) empty.hidden = false;
+    return;
+  }
+
+  // Layout
+  var W = 720, H = 280;
+  var padL = 44, padR = 16, padT = 24, padB = 36;
+  var plotW = W - padL - padR;
+  var plotH = H - padT - padB;
+
+  var values = raw.map(function (b) { return parseInt(b.v || 0, 10); });
+  var labels = raw.map(function (b, i) { return b.label || String(i + 1); });
+  var n = values.length;
+  var maxV = Math.max.apply(null, values.concat([peak, Math.ceil(mean)]));
+  if (maxV < 1) maxV = 1;
+  // Round up to a "nice" axis ceiling
+  var niceMax = (maxV <= 5) ? maxV : (Math.ceil(maxV / 5) * 5);
+
+  var barSlot = plotW / n;
+  var barW = Math.min(48, barSlot * 0.62);
+
+  function x(i) { return padL + barSlot * i + barSlot / 2; }
+  function y(v) { return padT + plotH - (v / niceMax) * plotH; }
+
+  var parts = [];
+
+  // Y-axis gridlines + labels (4 ticks)
+  var ticks = 4;
+  for (var t = 0; t <= ticks; t++) {
+    var val = (niceMax / ticks) * t;
+    var yy = y(val);
+    parts.push('<line x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '" class="grid-line" />');
+    parts.push('<text x="' + (padL - 8) + '" y="' + (yy + 3).toFixed(1) + '" class="axis-label" text-anchor="end">' + Math.round(val) + '</text>');
+  }
+
+  // Mean line (dashed)
+  if (mean > 0) {
+    var my = y(mean);
+    parts.push('<line x1="' + padL + '" y1="' + my.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + my.toFixed(1) + '" class="mean-line" />');
+    parts.push('<text x="' + (W - padR) + '" y="' + (my - 6).toFixed(1) + '" class="mean-label" text-anchor="end">avg ' + mean.toFixed(1) + '</text>');
+  }
+
+  // Bars + values + x-axis labels
+  for (var i = 0; i < n; i++) {
+    var v = values[i];
+    var bx = x(i) - barW / 2;
+    var by = y(v);
+    var bh = padT + plotH - by;
+    var isPeak = (v === peak && v > 0 && (i + 1) === peakMinute);
+    var cls = isPeak ? 'bar peak' : 'bar';
+    parts.push('<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + bh.toFixed(1) + '" class="' + cls + '" />');
+    if (v > 0) {
+      parts.push('<text x="' + x(i).toFixed(1) + '" y="' + (by - 6).toFixed(1) + '" class="bar-value" text-anchor="middle">' + v + '</text>');
+    }
+    parts.push('<text x="' + x(i).toFixed(1) + '" y="' + (H - padB + 18) + '" class="axis-label" text-anchor="middle">' + labels[i] + '</text>');
+  }
+
+  // X-axis baseline
+  parts.push('<line x1="' + padL + '" y1="' + (padT + plotH) + '" x2="' + (W - padR) + '" y2="' + (padT + plotH) + '" class="axis-line" />');
+
+  // Y-axis label
+  parts.push('<text x="' + (padL - 32) + '" y="' + (padT + plotH / 2) + '" class="axis-title" text-anchor="middle" transform="rotate(-90 ' + (padL - 32) + ' ' + (padT + plotH / 2) + ')">sacks</text>');
+
+  svg.innerHTML = parts.join('');
+})();
+
+// ── Confidence bars: read data-pct / data-fill and apply as width + class ──
+(function () {
+  var bars = document.querySelectorAll('.conf-bar > span[data-pct]');
+  for (var i = 0; i < bars.length; i++) {
+    var el = bars[i];
+    var pct = parseInt(el.dataset.pct || '0', 10);
+    if (isNaN(pct) || pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    el.style.width = pct + '%';
+    var fill = (el.dataset.fill || '').trim();
+    if (fill) el.classList.add(fill);
+  }
+})();
+</script>
 {% endblock %}

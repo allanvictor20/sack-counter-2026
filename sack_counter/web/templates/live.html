@@ -22,6 +22,29 @@
     </div>
   </header>
 
+  <div class="totals">
+    <div class="total">
+      <div class="label" id="live-count-sacks-label">{{ 'Sacks out' if session.mode == 'exit' else 'Sacks in' }}</div>
+      <div class="value accent mono" id="live-count-sacks">0</div>
+      <div class="note">Updated as the run goes.</div>
+    </div>
+    <div class="total">
+      <div class="label">Boxes</div>
+      <div class="value mono" id="live-count-boxes">0</div>
+      <div class="note">Sacks-in only.</div>
+    </div>
+    <div class="total">
+      <div class="label">Workers</div>
+      <div class="value mono" id="live-count-workers">0</div>
+      <div class="note">Confirmed carriers.</div>
+    </div>
+    <div class="total">
+      <div class="label">To review</div>
+      <div class="value mono" id="live-count-review">0</div>
+      <div class="note">Flagged for a human eye.</div>
+    </div>
+  </div>
+
   <div class="live-body">
     <div class="stage">
       <div class="stage-inner">
@@ -52,7 +75,7 @@
       <div class="aside-head">
         <h6 style="margin:0">What just happened</h6>
       </div>
-      <div id="events" style="flex:1 0 auto;min-height:160px;padding:4px 0">
+      <div id="events" style="flex:1 0 auto;min-height:160px;padding:4px 0;overflow:auto">
         <div class="event"><div class="what screen-sub">Nothing yet.</div></div>
       </div>
 

@@ -19,8 +19,10 @@
           <div class="field" style="flex:1">
             <label for="source">Video file or camera</label>
             <input class="input mono" id="source" value="{{ cfg.get('last_source', '') }}"
-                   placeholder="warehouse_gate_b.mp4">
+                   placeholder="Pick a video below or type a path">
           </div>
+          <button class="btn btn-secondary" id="browse-btn" type="button">Browse…</button>
+          <input type="file" id="source-file" accept="video/*" hidden>
           <button class="btn btn-secondary" id="use-webcam">Use webcam</button>
         </div>
         <div class="screen-sub" id="source-info" style="margin-top:6px"></div>
@@ -115,7 +117,7 @@
         <button class="btn btn-primary btn-block" id="start-btn"
                 style="justify-content:flex-start;padding:11px 14px"
                 {% if not can_start %}disabled{% endif %}>Start counting</button>
-        <a class="btn btn-secondary btn-block" href="/calibrate"
+        <a class="btn btn-secondary btn-block" href="/calibrate" id="calibrate-link"
            style="justify-content:flex-start;padding:11px 14px">Calibrate the camera first</a>
       </div>
     </div>
