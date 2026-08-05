@@ -28,6 +28,7 @@ from .. import theme as T
 from ..drawing import (
     draw_count_block, draw_stat_panel, draw_status_strip, draw_warning_card,
 )
+from .exit_landing import reconcile_counts
 
 if TYPE_CHECKING:
     from .exit_state import ExitPipelineState
@@ -69,10 +70,11 @@ def draw_exit_frame(
     u = T.unit(frame)
 
     # ── Geometry ──────────────────────────────────────────────
+    best_count = reconcile_counts(state)
     door.draw(
         frame,
         label="EXIT DOOR",
-        count=state["total_sacks_out"],
+        count=best_count,
         show_debug=True,
     )
     landing_zone.draw(
@@ -114,15 +116,25 @@ def draw_exit_frame(
                       thickness=2.5, size=10.5)
 
     # ── Console chrome ────────────────────────────────────────
-    _draw_console(frame, u, state, fps, fn)
+    _draw_console(frame, u, state, fps, fn, best_count)
 
 
-def _draw_console(frame, u, state, fps: float, fn: int) -> None:
-    """Headline block, session panel, discrepancy callout, status footer."""
+def _draw_console(frame, u, state, fps: float, fn: int, best_count: int) -> None:
+    """Headline block, session panel, discrepancy callout, status footer.
+
+    The headline "Sacks out" number is the reconciled count — driven
+    primarily by the landing zone (landing_exit_count), since that is
+    the module's primary, more reliable counter (see exit_landing.py
+    module docstring). Door-crossing only raises this number further
+    if --use-door-crossing ever counts higher than the landing zone
+    (e.g. a sack landed somewhere the landing zone polygon doesn't
+    cover); it never lowers it, and by default (door-crossing off)
+    total_sacks_out is always 0, so best_count == landing_exit_count.
+    """
     fw = frame.shape[1]
 
     draw_count_block(
-        frame, u, "Sacks out", state["total_sacks_out"],
+        frame, u, "Sacks out", best_count,
         stats=(("On the floor", state["landing_peak_count"]),
                ("Pending", len(state["tentative_crossings"]))),
     )
@@ -144,10 +156,11 @@ def _draw_console(frame, u, state, fps: float, fn: int) -> None:
     draw_stat_panel(
         frame, u, panel_x, cursor, panel_w, "This session",
         rows=(
-            ("Counted at the door", state["total_sacks_out"], T.ACCENT_500),
-            ("Landed in the zone",  state["landing_exit_count"]),
-            ("On the floor now",    state["landing_peak_count"]),
-            ("Waiting to confirm",  len(state["tentative_crossings"])),
+            ("Sacks out (best est.)", best_count, T.ACCENT_500),
+            ("Landed in the zone",    state["landing_exit_count"]),
+            ("On the floor now",      state["landing_peak_count"]),
+            ("Counted at the door",   state["total_sacks_out"]),
+            ("Waiting to confirm",    len(state["tentative_crossings"])),
         ),
     )
 

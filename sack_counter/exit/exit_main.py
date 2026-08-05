@@ -1,42 +1,32 @@
 """
 exit_main.py — Main processing loop for exit sack counting mode.
 
-Counting strategy — landing zone is primary
-----------------------------------------------
-Door-crossing counting is now OPTIONAL and OFF by default
-(--use-door-crossing to enable). The landing zone accumulator is the
-sole counter in the default configuration.
+Counting strategy — landing zone ONLY
+----------------------------------------
+Every raw detection is filtered against the landing zone polygon
+BEFORE it reaches track confirmation. A sack detected anywhere else
+in the frame — near the door, mid-corridor, still in someone's hands
+— is discarded outright: it gets no track ID state, no hit/miss
+counters, no confirmed_sacks entry. It does not exist to the pipeline
+at all until it physically overlaps the landing zone.
 
-This was a deliberate change after real-world testing showed two
-structural problems with door-crossing:
-  1. The door polygon and landing zone polygon, drawn with a gap
-     between them (to avoid double-counting under the old design),
-     created a "dead zone" where sacks landing in that gap were
-     invisible to BOTH polygons.
-  2. Even with the gap fixed, door-crossing is fundamentally a weaker
-     signal than landing-zone stillness detection: a sack may flash
-     past the door for only 1-2 low-confidence frames and never get
-     confirmed there, whereas it will almost always eventually sit
-     still in the landing zone long enough to be reliably detected.
+This means --use-door-crossing is now a no-op: door-crossing depends
+on sacks having tracked state near the door polygon, which can no
+longer happen. total_sacks_out will stay 0 regardless of that flag.
+A warning is printed at startup if it's passed.
 
 Door calibration is still offered (when not headless) purely as a
 VISUAL REFERENCE — so you can see where the door is while drawing the
-landing zone polygon — but the door polygon itself no longer feeds into
-the exit count unless explicitly re-enabled.
+landing zone polygon — it plays no role in counting.
 
-Pipeline per frame (default: door-crossing disabled)
--------------------------------------------------------
+Pipeline per frame
+---------------------
 1. YOLO detects sacks (class 1 only — persons skipped).
 2. ByteTrack assigns stable IDs.
-3. update_exit_sacks() confirms/evicts tracks.
-4. update_landing_zone() tracks the landing zone accumulator (PRIMARY).
-5. draw_exit_frame() renders overlays.
-
-Pipeline per frame (--use-door-crossing enabled)
-----------------------------------------------------
-Adds back: update_exit_crossings(), confirm_tentative_crossings(),
-check_discrepancy() as a secondary/earlier signal and cross-check
-against the landing zone count.
+3. Detections are filtered to landing-zone-overlap only.
+4. update_exit_sacks() confirms/evicts tracks (zone-filtered detections only).
+5. update_landing_zone() tracks the landing zone accumulator (SOLE counter).
+6. draw_exit_frame() renders overlays.
 
 No person detection, no carrier stamping, no peak windows.
 """
@@ -186,6 +176,14 @@ def run_exit_counter(
         door         = _load_door_from_cfg(cfg)
         landing_zone = _load_landing_from_cfg(cfg)
 
+    if use_door_crossing:
+        print(
+            "  Warning: --use-door-crossing has no effect. Detections are "
+            "now filtered to the landing zone before tracking even begins, "
+            "so no sack ever appears near the door with tracked state for "
+            "the door-crossing path to act on. total_sacks_out will stay 0."
+        )
+
     # ── State + tracker ────────────────────────────────────────
     # LandingZoneTracker now uses the SAME stillness-detection class
     # and config values (still_speed_thresh, still_speed_window) that
@@ -241,6 +239,23 @@ def run_exit_counter(
 
         # ── YOLO + ByteTrack (sack class only) ────────────────
         raw_detections = _detect_sacks(model, frame, cfg["conf_sack"], sack_cls)
+
+        # ── Restrict to the landing zone ONLY ──────────────────
+        # Per explicit requirement: sacks are not tracked, confirmed,
+        # or counted unless they overlap the landing zone polygon.
+        # Filtering here — before update_exit_sacks() ever sees them —
+        # means a sack detected anywhere else in the frame (near the
+        # door, mid-corridor, in someone's hands) gets no track state
+        # at all: no sack_hit/sack_miss counters, no confirmed_sacks
+        # entry, nothing. It simply does not exist to the pipeline
+        # until it is physically inside the landing zone.
+        raw_detections = [
+            det for det in raw_detections
+            if landing_zone.bbox_overlaps(
+                det[1], det[2], det[3], det[4],
+                min_fraction=float(cfg["exit_landing_min_overlap"]),
+            )
+        ]
 
         # ── Track confirmation ─────────────────────────────────
         confirmed_sacks = update_exit_sacks(
