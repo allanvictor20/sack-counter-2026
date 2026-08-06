@@ -32,7 +32,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
+
+from .field_view import FieldView
 
 
 # ── Sub-group dataclasses ─────────────────────────────────────────────────────
@@ -132,8 +134,6 @@ class CarrierGuardState:
 @dataclass
 class DoorState:
     """Door-zone tracking state (v21 — replaces gate crossing state)."""
-    door_candidates:   dict = field(default_factory=dict)
-    # pid -> DoorCandidateState
     persons_past_door: set  = field(default_factory=set)
     # pids that have been committed this session
     last_commit_frame: dict = field(default_factory=dict)
@@ -183,7 +183,6 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     # person position history
     "person_position_history":    ("persons",    "person_position_history"),
     # door zone (v21)
-    "door_candidates":            ("door_state", "door_candidates"),
     "persons_past_door":          ("door_state", "persons_past_door"),
     "last_commit_frame":          ("door_state", "last_commit_frame"),
     # carrier guards (formerly "guards" / AssignBugState)
@@ -195,14 +194,15 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-class PipelineState:
+class PipelineState(FieldView):
     """
     Top-level container for all per-frame pipeline state.
 
     Provides a ``dict``-like interface (``[]``, ``get``, ``in``) so that
     existing call-sites using ``state["key"]`` work without modification
     while new code can access typed sub-groups directly via
-    ``state.persons``, ``state.sacks``, etc.
+    ``state.persons``, ``state.sacks``, etc.  The interface itself comes
+    from :class:`FieldView`, shared with the exit-mode container.
 
     Direct attributes
     -----------------
@@ -215,6 +215,9 @@ class PipelineState:
     guards   : CarrierGuardState
     """
 
+    _FIELDS = _FIELD_MAP
+    _DIRECT = {"frame": "frame", "_frame_no": "_frame_no_val"}
+
     def __init__(self) -> None:
         self.frame:    Any               = None
         self._frame_no_val: int          = 0
@@ -225,39 +228,3 @@ class PipelineState:
         self.peak:     PeakState         = PeakState()
         self.guards:    CarrierGuardState = CarrierGuardState()
         self.door_state: DoorState         = DoorState()
-
-    # ── dict-like interface ───────────────────────────────────
-
-    def __getitem__(self, key: str) -> Any:
-        if key == "frame":
-            return self.frame
-        if key == "_frame_no":
-            return self._frame_no_val
-        group_attr, field_attr = _FIELD_MAP[key]
-        return getattr(getattr(self, group_attr), field_attr)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key == "frame":
-            self.frame = value
-            return
-        if key == "_frame_no":
-            self._frame_no_val = value
-            return
-        group_attr, field_attr = _FIELD_MAP[key]
-        setattr(getattr(self, group_attr), field_attr, value)
-
-    def __contains__(self, key: str) -> bool:
-        return key in _FIELD_MAP or key in ("frame", "_frame_no")
-
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def pop(self, key: str, *args) -> Any:
-        """Not supported on sub-group scalars; dict fields support .pop() directly."""
-        raise TypeError(
-            f"PipelineState.pop() is not supported for key {key!r}. "
-            "Access the sub-group dict directly (e.g. state.persons.person_boxes.pop(...))."
-        )

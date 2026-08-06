@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from ..config import load_config
 from ..door_polygon import DoorPolygon
 from ..confidence import ConfidenceTracker
 from .analytics import AnalyticsEngine

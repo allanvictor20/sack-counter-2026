@@ -22,52 +22,6 @@ def _cfg(**overrides):
     return cfg
 
 
-class TestDoorPeakWindowDirection(unittest.TestCase):
-    """
-    Verify direction-aware peak window boundaries using door centroid.
-    """
-
-    def _compute_window(self, approach_side, door_cx=600,
-                        peak_window_px=350, peak_freeze_px=40):
-        cfg = _cfg(
-            peak_window_px=peak_window_px,
-            peak_freeze_px=peak_freeze_px,
-            door_approach_side=approach_side,
-        )
-        if approach_side == "right":
-            approach_open = door_cx + cfg["peak_window_px"]
-            freeze_edge   = door_cx - cfg["peak_freeze_px"]
-            def in_window(cx): return freeze_edge < cx <= approach_open
-        else:  # left
-            approach_open = door_cx - cfg["peak_window_px"]
-            freeze_edge   = door_cx + cfg["peak_freeze_px"]
-            def in_window(cx): return approach_open <= cx < freeze_edge
-        return approach_open, freeze_edge, in_window, door_cx
-
-    def test_right_approach_window_has_valid_range(self):
-        ao, fe, in_w, door_cx = self._compute_window("right")
-        # freeze_edge < approach_open
-        self.assertLess(fe, ao)
-        mid = (fe + ao) // 2
-        self.assertTrue(in_w(mid))
-
-    def test_left_approach_window_has_valid_range(self):
-        ao, fe, in_w, door_cx = self._compute_window("left")
-        # approach_open < freeze_edge for left approach
-        self.assertLess(ao, fe)
-        mid = (ao + fe) // 2
-        self.assertTrue(in_w(mid))
-
-    def test_right_approach_person_past_door_not_in_window(self):
-        ao, fe, in_w, door_cx = self._compute_window("right")
-        # Someone far to the left (past door on room side) should be outside window
-        self.assertFalse(in_w(door_cx - 500))
-
-    def test_left_approach_person_past_door_not_in_window(self):
-        ao, fe, in_w, door_cx = self._compute_window("left")
-        self.assertFalse(in_w(door_cx + 500))
-
-
 class TestConfigLoader(unittest.TestCase):
     def test_defaults_returned_with_no_path(self):
         cfg = load_config(None)
@@ -109,8 +63,12 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIn("direction_lookback_frames", cfg)
         self.assertIn("min_convergence_px", cfg)
         self.assertIn("reentry_margin_px", cfg)
-        self.assertIn("door_approach_side", cfg)
         self.assertNotIn("gate_gap_px", cfg)
+        # door_approach_side was a left/right flag from before the
+        # normal-vector rewrite.  Its last two readers were the axis bug
+        # that rewrite was meant to remove, so the key is gone rather
+        # than left in the config looking like a live tuning knob.
+        self.assertNotIn("door_approach_side", cfg)
 
 
 if __name__ == "__main__":

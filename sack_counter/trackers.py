@@ -9,7 +9,6 @@ Classes:
 """
 
 import numpy as np
-import logging
 from collections import defaultdict, deque
 
 from .embedder import DeepEmbedder
@@ -151,10 +150,13 @@ class IdentityRelinker:
         if best_old is not None and best_score >= self.threshold:
             self.id_map[new_pid] = best_old
             del self.lost_registry[best_old]
-            msg = (f"Re-ID: P#{new_pid} → P#{best_old}  "
-                   f"score={best_score:.3f}  frame={frame_no}")
-            logger.info(msg)
-            print(f"  [RE-ID] {msg}")
+            # Logged, not printed: this is library code, and under the web
+            # console stdout goes to a server log nobody is watching.  The
+            # event list below is what the UI actually reads.
+            logger.info(
+                "Re-ID: P#%d -> P#%d  score=%.3f  frame=%d",
+                new_pid, best_old, best_score, frame_no,
+            )
             self.reid_events.append({
                 "frame":  frame_no,
                 "new_id": new_pid,

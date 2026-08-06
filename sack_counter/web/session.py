@@ -26,11 +26,8 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
 
 import cv2
-
-from ..drawing import build_event_feed
 
 
 @dataclass
@@ -174,7 +171,7 @@ class SessionManager:
             save_output = options.save_output,
             headless    = True,               # the browser is the display
             config_path = options.config_path,
-            frame_sink  = self._publish_enter,
+            frame_sink  = self._publish,
             should_stop = self._stop.is_set,
         )
 
@@ -187,7 +184,7 @@ class SessionManager:
             headless          = True,
             config_path       = options.config_path,
             use_door_crossing = options.use_door_crossing,
-            frame_sink        = self._publish_exit,
+            frame_sink        = self._publish,
             should_stop       = self._stop.is_set,
         )
 
@@ -205,90 +202,48 @@ class SessionManager:
                                [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         return buf.tobytes() if ok else None
 
-    def _publish_enter(self, frame, session, frame_no: int, fps: float) -> None:
+    def _publish(self, view) -> None:
+        """
+        Frame sink for both modes.
+
+        The rate check comes first and the view is lazy, so a frame we
+        are not publishing costs one object and nothing else — no worker
+        rollup, no event feed, no JPEG encode.
+        """
         if not self._should_publish():
             return
-        state    = session.state
-        relinker = session.relinker
-        box_del  = session.box_pipeline.delivery_counts()
-
-        workers, seen = [], set()
-        for pid in state["confirmed_persons"]:
-            can = relinker.canonical(pid)
-            if can in seen:
-                continue
-            seen.add(can)
-            workers.append({
-                "id":        can,
-                "delivered": len(state["person_sack_delivered"].get(can, set())),
-                "boxes":     box_del.get(can, 0),
-                "carrying":  state["person_load"].get(can, 0),
-            })
-        workers.sort(key=lambda w: (-w["delivered"], w["id"]))
-
-        events = build_event_feed(
-            delivery_log     = state["delivery_log"],
-            box_delivery_log = session.box_pipeline.delivery_log,
-            anomaly_log      = state["anomaly_log"],
-            reid_events      = relinker.reid_events,
-            src_fps          = session.src_fps,
-            limit            = 12,
-        )
-
-        jpeg = self._encode(frame)
+        jpeg = self._encode(view.frame)
+        events = [
+            {"time": e["time"], "text": e["text"], "tag": e["tag"],
+             "tone": _tone_for(e["tag"])}
+            for e in view.events
+        ]
+        warning = view.warning or _discrepancy_warning(view)
         with self._lock:
             snap = self._snapshot
-            snap.frame_no = frame_no
-            snap.fps      = fps
-            snap.workers  = workers
-            snap.events   = [
-                {"time": e["time"], "text": e["text"], "tag": e["tag"],
-                 "tone": _tone_for(e["tag"])}
-                for e in events
-            ]
-            snap.totals = {
-                "sacks":     state["total_sacks_counted"],
-                "boxes":     session.box_pipeline.total_counted,
-                "workers":   len(workers),
-                "review":    state["n_anomalies"],
-                "relinks":   len(relinker.reid_events),
-                "label":     "Sacks in",
-            }
+            snap.frame_no = view.frame_no
+            snap.fps      = view.fps
+            snap.workers  = view.workers
+            snap.events   = events
+            snap.totals   = view.totals
+            if warning:
+                snap.warning = warning
             if jpeg is not None:
                 self._jpeg = jpeg
 
-    def _publish_exit(self, frame, state, frame_no: int, fps: float) -> None:
-        if not self._should_publish():
-            return
-        jpeg = self._encode(frame)
-        with self._lock:
-            snap = self._snapshot
-            snap.frame_no = frame_no
-            snap.fps      = fps
-            snap.workers  = []
-            snap.totals = {
-                "sacks":     state["total_sacks_out"],
-                "landed":    state["landing_exit_count"],
-                "pile":      state["landing_peak_count"],
-                "pending":   len(state["tentative_crossings"]),
-                "review":    len(state["discrepancy_flags"]),
-                "label":     "Sacks out",
-            }
-            flags = state["discrepancy_flags"]
-            snap.warning = (
-                f"The door counted {flags[-1]['door_count']} sacks and the "
-                f"landing zone counted {flags[-1]['landing_count']}. Check "
-                f"the video around this point before trusting the total."
-                if flags else None
-            )
-            snap.events = [
-                {"time": f"frame {rec.get('frame', 0)}",
-                 "text": f"Sack {rec.get('sack_id')} left the room",
-                 "tag": "Counted", "tone": "accent"}
-                for rec in state["exit_log"][-12:][::-1]
-            ]
-            if jpeg is not None:
-                self._jpeg = jpeg
+
+def _discrepancy_warning(view) -> str | None:
+    """Exit mode's two counters disagreeing is the one thing to surface."""
+    if view.mode != "exit":
+        return None
+    flags = view.state["discrepancy_flags"]
+    if not flags:
+        return None
+    return (
+        f"The door counted {flags[-1]['door_count']} sacks and the landing "
+        f"zone counted {flags[-1]['landing_count']}. Check the video around "
+        f"this point before trusting the total."
+    )
 
 
 def _tone_for(tag: str) -> str:

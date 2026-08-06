@@ -165,7 +165,6 @@ def _normalize_report(data: dict) -> dict:
     mode = _detect_mode(data)
     data["mode"] = mode
     data["summary"] = _ensure_summary(data, mode)
-    summary = data["summary"]
 
     data["when"]      = _format_when(data)
     data["when_iso"]  = data["when"]

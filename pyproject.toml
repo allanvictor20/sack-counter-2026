@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sack-counter"
+version = "23.0.0"
+description = "Counts sacks and boxes carried through a doorway, from video."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+# The counting pipeline. The web console's dependencies are an extra:
+# a headless deployment running --headless on a schedule has no use for
+# FastAPI, and a machine with no GPU should not be made to install it.
+dependencies = [
+    "ultralytics>=8.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "opencv-python>=4.8.0",
+    "Pillow>=9.5.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "jinja2>=3.1.0",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",            # fastapi.testclient
+    "ruff>=0.5",
+]
+
+[project.scripts]
+sack-counter = "sack_counter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sack_counter*"]
+
+# The console's templates and static assets are package data, not source,
+# so they have to be declared or an installed copy serves 500s.
+[tool.setuptools.package-data]
+"sack_counter.web" = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Keep failures readable: the pipeline logs heavily at DEBUG, and a
+# failing end-to-end test otherwise buries its assertion under a
+# thousand lines of frame-by-frame tracing.
+addopts = "-q --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Defect-finding rules only. Import sorting (I) and the pyupgrade set
+# (UP) would rewrite the imports and annotations of every module in the
+# package for no behavioural gain; that is a deliberate separate pass,
+# not something to bundle into a release.
+select = ["E", "F", "W", "B"]
+ignore = [
+    "E501",    # long lines are the formatter's business, not the linter's
+    "E701",    # aligned one-line `if x: y` guards are used deliberately
+    "E702",
+    "B007",    # detection tuples are unpacked whole; the shape is the doc
+    "B008",    # FastAPI's Depends() in defaults is idiomatic
+    "B905",    # zip(strict=) is 3.10+, and the pairs here are same-length
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import fixtures for their side effects, shadow names freely, and
+# bind results they only mean to assert do not raise.
+"tests/*" = ["F401", "F811", "E402", "F841"]

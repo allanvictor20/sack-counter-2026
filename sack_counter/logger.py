@@ -9,8 +9,6 @@ Provides structured logging with configurable levels:
 """
 
 import logging
-import os
-from pathlib import Path
 
 
 def setup_logger(

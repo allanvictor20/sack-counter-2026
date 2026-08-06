@@ -321,7 +321,7 @@ def tracked_box(frame, x1, y1, x2, y2, u: float, stroke, label: str = "",
         return
     scale = fs(size, u)
     th = text_h(scale, 1, FONT_BODY)
-    pad_x, pad_y = px(6, u), px(2, u)
+    pad_y = px(2, u)
     chip_h = th + pad_y * 2 + px(2, u)
     top = int(y1) - chip_h
     if top < 0:                      # box hugs the frame top — sit inside

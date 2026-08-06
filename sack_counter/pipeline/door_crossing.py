@@ -14,44 +14,13 @@ Fixes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections import deque
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
-from ..confidence import confidence_class
-from .state_machine import SackState
+from .geometry import person_centroid
 
 if TYPE_CHECKING:
     from .orchestrator import PipelineSession
-    from ..door_polygon import DoorPolygon
-
-
-# ── State enum (kept for compatibility with drawing.py) ────────
-
-class DoorState(Enum):
-    CORRIDOR     = auto()
-    APPROACHING  = auto()
-    IN_DOOR      = auto()
-    DISAPPEARING = auto()
-    COUNTED      = auto()
-    ABORTED      = auto()
-
-
-# ── Per-carrier door state (kept for compatibility) ────────────
-
-@dataclass
-class DoorCandidateState:
-    pid:                  int
-    entered_door_fn:      int
-    peak_at_entry:        int
-    direction_ok:         bool
-    door_state:           DoorState = DoorState.IN_DOOR
-    max_miss_streak:      int  = 0
-    disappear_started_fn: int  = 0
-    last_seen_cx:         int  = 0
-    last_seen_cy:         int  = 0
-    aborted:              bool = False
 
 
 # ── Main update functions ──────────────────────────────────────
@@ -79,11 +48,11 @@ def update_door_zone(
     cfg    = session.cfg
     logger = session.logger
 
-    threshold = cfg.get("door_cross_threshold_px", 30)
-    try:
-        session.__dict__["debug_threshold"] = threshold
-    except Exception:
-        pass
+    # cfg[...] not cfg.get(..., 30): DEFAULT_CFG is the single source of
+    # truth for this key, and the inline fallback that used to sit here
+    # said 30 while the real default was 5 — the exact drift config.py's
+    # docstring warns about, on the very key it names.
+    threshold = cfg["door_cross_threshold_px"]
 
     # Get all confirmed non-ground sacks this frame
     confirmed_sack_list = [
@@ -98,13 +67,12 @@ def update_door_zone(
 
         # Update position history for this person
         pid_detected = (active_pids is None) or (pid in active_pids)
-        cx = state["person_prev_cx"].get(pid, -1) if pid_detected else -1
-        cy = _get_person_cy(pid, state) if pid_detected else 0
-        if cx >= 0:
+        point = person_centroid(state, pid) if pid_detected else None
+        if point is not None and point[0] >= 0:
             hist = state.persons.person_position_history.setdefault(
-                pid, deque(maxlen=cfg.get("direction_lookback_frames", 8) + 2)
+                pid, deque(maxlen=cfg["direction_lookback_frames"] + 2)
             )
-            hist.append((cx, cy))
+            hist.append(point)
 
         # Find sacks stamped to this carrier
         carrier_sacks = [
@@ -126,11 +94,8 @@ def update_door_zone(
         crossed = False
         crossing_sid = None
         crossing_proj = 0.0
-        frame_max_proj = None
         for (sid, x1, y1, x2, y2, scx, scy, sc) in carrier_sacks:
             proj = door.project_onto_normal(scx, scy)
-            if frame_max_proj is None or proj > frame_max_proj:
-                frame_max_proj = proj
             if proj >= threshold:
                 crossed = True
                 crossing_sid = sid
@@ -141,22 +106,17 @@ def update_door_zone(
                 )
                 break
 
-        # DEBUG: track the best (highest) projection ever seen for this
-        # carrier, so a failed delivery tells us how close it got instead
-        # of just "never crossed". Stored on `session` (not `state`),
-        # since PipelineState only accepts its predeclared fields.
-        # Wrapped in try/except so this instrumentation can never affect
-        # real counting logic or break on mocked sessions in tests.
-        if frame_max_proj is not None:
-            try:
-                store = session.__dict__.setdefault("debug_best_proj", {})
-                prev_best = store.get(pid)
-                if prev_best is None or frame_max_proj > prev_best:
-                    store[pid] = frame_max_proj
-            except Exception:
-                pass
-
         if not crossed:
+            # How close the load got is the first thing anyone asks when a
+            # delivery fails to register, so log it at debug rather than
+            # accumulating it in an untyped dict on the session object.
+            best = max((door.project_onto_normal(s[5], s[6])
+                        for s in carrier_sacks), default=None)
+            if best is not None:
+                logger.debug(
+                    "NO-CROSS P#%d  best proj=%.1f of %.1f needed  frame=%d",
+                    pid, best, threshold, fn,
+                )
             continue
 
         # Sack crossed — commit this carrier's peak
@@ -334,14 +294,6 @@ def _commit_orphaned_carriers(
         )
 
 
-def process_door_disappearance(
-    session: "PipelineSession",
-    fn: int,
-) -> int:
-    """Kept for compatibility — does nothing in this version."""
-    return 0
-
-
 def check_door_reentry(
     session: "PipelineSession",
     fn: int,
@@ -370,10 +322,10 @@ def check_door_reentry(
         if last_commit is not None and fn - last_commit <= grace_frames:
             continue
 
-        cx = state["person_prev_cx"].get(pid, -1)
-        if cx < 0:
+        point = person_centroid(state, pid)
+        if point is None or point[0] < 0:
             continue
-        cy = _get_person_cy(pid, state)
+        cx, cy = point
 
         if door.is_on_approach_side(cx, cy, reentry_margin):
             state["persons_past_door"].discard(pid)
@@ -398,33 +350,3 @@ def cleanup_door_histories(pid: int, state) -> None:
     the same pid and we don't want to lose the peak.
     """
     state.persons.person_position_history.pop(pid, None)
-    state["door_candidates"].pop(pid, None)
-
-
-# ── Private helpers ────────────────────────────────────────────
-
-def _get_person_cy(pid: int, state) -> int:
-    """Return the vertical centroid for pid from person_boxes, or 0."""
-    box = state["person_boxes"].get(pid)
-    if box is None:
-        return 0
-    x1, y1, x2, y2 = box
-    return (y1 + y2) // 2
-
-
-def _commit_door_delivery(
-    pid: int,
-    peak: int,
-    session: "PipelineSession",
-    fn: int,
-) -> int:
-    """Kept for compatibility — not called in this version."""
-    return 0
-
-
-def _find_carrier_sack(pid: int, state) -> Optional[int]:
-    """Return the sack ID most recently stamped to pid, or None."""
-    stamped = [s for s, p in state["sack_carrier_stamp"].items() if p == pid]
-    if not stamped:
-        return None
-    return max(stamped, key=lambda s: state["sack_scores"].get(s, 0.0), default=None)

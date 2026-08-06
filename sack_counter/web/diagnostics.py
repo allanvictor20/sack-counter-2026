@@ -52,15 +52,39 @@ def _load_model(model_path: str):
     return model
 
 
+#: The shape ``snapshot()`` always returns.  It used to return whatever
+#: happened to be in ``_result``, which before the first run was ``{}`` —
+#: so the template's ``diag.result|tojson`` hit an Undefined and the
+#: Detection-check screen raised a 500 on its very first visit.  Callers
+#: get every key, always; only the values change.
+_IDLE_SNAPSHOT: dict = {
+    "status":         "idle",
+    "source":         "",
+    "mode":           "enter",
+    "model_used":     "",
+    "every":          30,
+    "cutoff":         0.35,
+    "frames_checked": 0,
+    "detections":     0,
+    "error":          None,
+    "result":         None,
+}
+
+
 class DiagnosticRunner:
     def __init__(self):
         self._lock = threading.Lock()
         self._running = False
-        self._result = {}
+        self._result = dict(_IDLE_SNAPSHOT)
 
     def snapshot(self) -> dict:
+        """A complete snapshot — every key present whether or not a run
+        has happened yet."""
         with self._lock:
-            return dict(self._result)
+            snap = dict(_IDLE_SNAPSHOT)
+            snap.update(self._result)
+            snap["running"] = self._running
+            return snap
 
     def start(self, source: str, model_path: str, every: int = 30,
               cutoff: float = 0.35, mode: str = "enter"):

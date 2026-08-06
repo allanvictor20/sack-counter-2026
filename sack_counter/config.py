@@ -67,7 +67,6 @@ DEFAULT_CFG: dict[str, Any] = {
                                             # which re-entry cannot reset
     "door_cross_threshold_px":    5,        # signed projection past the door
                                             # plane that counts as "crossed"
-    "door_approach_side":         "right",
     "polygon_padding_px":         0,        # optional padding around polygon
     "minimum_visible_frames":     3,        # min frames inside polygon before tracking
     "conf_weight_detection":  0.30,
@@ -109,7 +108,6 @@ DEFAULT_CFG: dict[str, Any] = {
 CALIBRATION_KEYS = (
     "door_polygon_points",
     "door_room_point",
-    "door_approach_side",
     "landing_zone_points",
 )
 

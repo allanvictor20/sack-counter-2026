@@ -24,11 +24,11 @@ The current algorithm is simpler and is implemented entirely inside
          (no delay, no disappearance phase), clear all sack stamps for
          that carrier, and mark the carrier as past_door / past_gate.
 
-``door_candidates``, ``DoorCandidateState``, and ``DoorState`` are still
-defined in door_crossing.py for backward-compatible imports (drawing.py
-references DoorState for debug overlay labels), but they are no longer
-populated by the counting algorithm itself. ``process_door_disappearance``
-is now a no-op kept only for call-site compatibility.
+``door_candidates``, ``DoorCandidateState``, ``DoorState`` and
+``process_door_disappearance`` survived as no-op shims long after the
+algorithm stopped using them, justified by a drawing.py import that no
+longer exists.  They have been deleted, along with the tests that only
+asserted the shims were still importable.
 
 These tests verify the REAL commit trigger: a stamped sack crossing the
 door threshold.
@@ -42,10 +42,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sack_counter.door_polygon import DoorPolygon
 from sack_counter.pipeline.door_crossing import (
-    DoorState,
-    DoorCandidateState,
     update_door_zone,
-    process_door_disappearance,
     check_door_reentry,
     cleanup_door_histories,
 )
@@ -106,53 +103,6 @@ def _stamp_sack(session, sid, pid, cx, cy, conf=0.9):
     state["sack_carrier_stamp"][sid] = pid
     state["sack_scores"][sid] = conf
     return box
-
-
-# ── DoorState enum — still defined for drawing.py compatibility ───
-
-class TestDoorStateEnum(unittest.TestCase):
-    """
-    DoorState / DoorCandidateState remain importable even though the
-    current algorithm no longer drives a per-candidate state machine.
-    drawing.py still imports DoorState for debug overlay labels.
-    """
-
-    def test_enum_values_exist(self):
-        for name in ("CORRIDOR", "APPROACHING", "IN_DOOR",
-                     "DISAPPEARING", "COUNTED", "ABORTED"):
-            self.assertTrue(hasattr(DoorState, name))
-
-    def test_candidate_default_state(self):
-        cand = DoorCandidateState(
-            pid=1, entered_door_fn=0,
-            peak_at_entry=2, direction_ok=True,
-        )
-        self.assertEqual(cand.door_state, DoorState.IN_DOOR)
-
-
-# ── No-op compatibility shim ───────────────────────────────────────
-
-class TestProcessDoorDisappearanceIsNoOp(unittest.TestCase):
-    """
-    process_door_disappearance is kept only so older call-sites don't
-    break on import/call. It must always return 0 and must never raise,
-    regardless of session/state content.
-    """
-
-    def test_returns_zero_with_empty_session(self):
-        session = _make_session()
-        result = process_door_disappearance(session, fn=10)
-        self.assertEqual(result, 0)
-
-    def test_returns_zero_after_a_real_commit(self):
-        session = _make_session()
-        session.state["person_peak_count"][1] = 2
-        _stamp_sack(session, sid=1, pid=1, cx=200, cy=290)  # past threshold
-        update_door_zone(session, fn=10)
-        # Even after a real commit happened via update_door_zone,
-        # process_door_disappearance is still a no-op.
-        result = process_door_disappearance(session, fn=20)
-        self.assertEqual(result, 0)
 
 
 # ── Core commit trigger: stamped sack crosses the door ─────────────
@@ -277,33 +227,13 @@ class TestSackCrossingCommit(unittest.TestCase):
         self.assertEqual(entry["trigger"], "sack_crossing")
 
 
-# ── Stale candidate eviction — feature no longer exists ────────────
-
-class TestStaleCandidateEvictionRemoved(unittest.TestCase):
-    """
-    The old design evicted DoorCandidateState entries older than
-    max_candidate_age_frames. The current algorithm has no notion of
-    candidate "age" at all — door_candidates is never populated, so
-    there is nothing to evict. This test documents that door_candidates
-    stays empty regardless of how many frames pass.
-    """
-
-    def test_door_candidates_remains_empty_regardless_of_age(self):
-        session = _make_session(cfg_overrides={"max_candidate_age_frames": 10})
-        update_door_zone(session, fn=5)
-        self.assertEqual(session.state["door_candidates"], {})
-
-        update_door_zone(session, fn=200)
-        self.assertEqual(session.state["door_candidates"], {})
-
-
 # ── Memory-leak prevention ──────────────────────────────────────────
 
 class TestCleanupDoorHistories(unittest.TestCase):
     """
     cleanup_door_histories intentionally preserves person_peak_count
     (so ReID can restore a peak for a person who briefly drops tracking)
-    while clearing position history and any door_candidates entry.
+    while clearing position history.
     """
 
     def test_position_history_cleared_on_timeout(self):
@@ -315,17 +245,6 @@ class TestCleanupDoorHistories(unittest.TestCase):
         cleanup_door_histories(42, state)
 
         self.assertNotIn(42, state.persons.person_position_history)
-
-    def test_door_candidates_entry_cleared_if_present(self):
-        """Even though nothing populates door_candidates today, cleanup
-        must still safely remove an entry if one is present (defensive)."""
-        session = _make_session()
-        state = session.state
-        state["door_candidates"][42] = MagicMock()
-
-        cleanup_door_histories(42, state)
-
-        self.assertNotIn(42, state["door_candidates"])
 
     def test_person_peak_count_is_intentionally_preserved(self):
         """This is documented, deliberate behavior — NOT a bug.

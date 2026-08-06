@@ -90,7 +90,6 @@ min_convergence_px:        20
 reentry_margin_px:         50
 reentry_grace_frames:      5     # frames after a commit during which
                                  # re-entry cannot reset a carrier
-door_approach_side:        right
 door_cross_threshold_px:   5     # SIGNED projection past the door plane.
                                  # Lowered from 30: carriers were getting
                                  # occluded mid-doorway around proj≈15-18

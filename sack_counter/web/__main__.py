@@ -1,18 +1,17 @@
 """
 __main__.py — ``python -m sack_counter.web``
 
-Starts the console on localhost.  Binds to 127.0.0.1 by default: the app
-has no authentication and can start a session that reads a camera, so it
-should not be reachable from the network unless you say so explicitly.
+Kept as an alias for ``sack-counter --web``; both land in
+:func:`sack_counter.web.serve`, so the bind-address warning and the
+missing-dependency message are the same whichever way it is started.
 """
 
 from __future__ import annotations
 
 import argparse
-import webbrowser
 
-from ..console import force_utf8_stdio
 from ..version import VERSION_TAG
+from . import serve
 
 
 def main() -> None:
@@ -27,16 +26,8 @@ def main() -> None:
                     help="Do not open a browser window on start")
     args = ap.parse_args()
 
-    force_utf8_stdio()
-    url = f"http://{args.host}:{args.port}"
-    print(f"\n  Sack Counter {VERSION_TAG} — web console")
-    print(f"  {url}\n")
-    if not args.no_browser and not args.reload:
-        webbrowser.open(url)
-
-    import uvicorn
-    uvicorn.run("sack_counter.web.app:app", host=args.host, port=args.port,
-                reload=args.reload, log_level="info")
+    serve(host=args.host, port=args.port,
+          open_browser=not args.no_browser, reload=args.reload)
 
 
 if __name__ == "__main__":

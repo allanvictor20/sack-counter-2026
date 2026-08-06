@@ -41,6 +41,7 @@ from collections import deque
 
 from ..console import force_utf8_stdio
 from ..config import load_config, save_calibration
+from ..session_view import SessionView
 from ..model_classes import resolve_class_indices
 from ..door_polygon import calibrate_door_polygon, DoorPolygon, _get_display_cap
 from .landing_zone import calibrate_landing_zone, LandingZone
@@ -52,7 +53,6 @@ from .exit_crossing import (
     expire_old_projections,
 )
 from .exit_landing import (
-    LandingZoneTracker,
     make_landing_zone_tracker,
     update_landing_zone,
     check_discrepancy,
@@ -85,10 +85,10 @@ def run_exit_counter(
         save_output:       Write annotated video to ``exit_output.mp4``.
         headless:          Suppress the display window.
         config_path:       Path to YAML/JSON config file.
-        frame_sink:        Optional ``fn(frame, state, frame_no, fps)``
-                           called once per frame after the overlay is
-                           drawn, so a host can stream the annotated
-                           frames without a display window.
+        frame_sink:        Optional ``fn(SessionView)`` called once per
+                           frame after the overlay is drawn, so a host
+                           can stream the annotated frames without a
+                           display window.  Same contract as entry mode.
         should_stop:       Optional ``fn() -> bool`` polled each
                            iteration; True ends the run cleanly and the
                            report still covers the frames processed.
@@ -129,10 +129,10 @@ def run_exit_counter(
     # ── Model ─────────────────────────────────────────────────
     try:
         from ultralytics import YOLO
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "ultralytics is not installed.  Run: pip install ultralytics"
-        )
+        ) from exc
 
     # Exit mode prefers a dedicated model (exit_model_path) trained
     # specifically on ground-lying/piled sacks, since the entry-mode
@@ -324,7 +324,7 @@ def run_exit_counter(
             out.write(frame)
 
         if frame_sink is not None:
-            frame_sink(frame, state, fn, fps)
+            frame_sink(SessionView.for_exit(frame, state, fn, fps))
 
         if not headless:
             disp_frame = cv2.resize(frame, (disp_w, disp_h)) if disp_scale != 1.0 else frame

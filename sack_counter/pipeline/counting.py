@@ -15,8 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..confidence import confidence_class
-from .state_machine import SackState
+from .geometry import in_approach_window, person_projection
 
 if TYPE_CHECKING:
     from .orchestrator import PipelineSession
@@ -63,46 +62,18 @@ def update_peak_counts(
     owner_map  = sack_owner_override  or state["sack_owner"]
     scores_map = sack_scores_override or state["sack_scores"]
 
-    # ── Build in-window predicate ─────────────────────────────
-    # v22: projection-based window along door normal.
-    # Corridor side  → negative projection
-    # Room side      → positive projection
-    # freeze_edge    → small positive projection just inside the door
-
+    # ── In-window predicate ───────────────────────────────────
+    # Projection along the door normal: corridor side is negative, room
+    # side positive, and the window closes just past the plane so a
+    # carrier's peak freezes while they are in the doorway.
     peak_window_px = cfg["peak_window_px"]
     peak_freeze_px = cfg["peak_freeze_px"]
 
-    # approach_open is on the CORRIDOR side (negative proj)
-    approach_open_proj = -float(peak_window_px)
-    # freeze is just slightly past the centroid toward the room side
-    freeze_proj = float(peak_freeze_px)
-
-    def _in_window_proj(cx: int, cy: int) -> bool:
-        """True if projection is between approach_open and freeze edge."""
-        proj = door.project_onto_normal(cx, cy)
-        return approach_open_proj <= proj <= freeze_proj
-
-    # Fallback predicate (v21 x-coord logic) kept for legacy/headless use
-    def _in_window_x(pid_cx: int) -> bool:
-        door_cx       = door.centroid[0]
-        approach_side = cfg.get("door_approach_side", "right")
-        if approach_side == "right":
-            approach_open = door_cx + peak_window_px
-            freeze_edge   = door_cx - peak_freeze_px
-            return freeze_edge < pid_cx <= approach_open
-        else:
-            approach_open = door_cx - peak_window_px
-            freeze_edge   = door_cx + peak_freeze_px
-            return approach_open <= pid_cx < freeze_edge
-
-    use_normal = hasattr(door, "normal_vec") and door.normal_vec is not None
-
     def _in_window(pid: int) -> bool:
-        cx = state["person_prev_cx"].get(pid, 0)
-        if use_normal:
-            cy = _get_person_cy(pid, state)
-            return _in_window_proj(cx, cy)
-        return _in_window_x(cx)
+        return in_approach_window(
+            person_projection(door, state, pid),
+            peak_window_px, peak_freeze_px,
+        )
 
     stamp_thresh = cfg["peak_stamp_score"]
 
@@ -158,17 +129,8 @@ def update_peak_counts(
         )
         if clean_sacks > state["person_peak_count"][pid]:
             state["person_peak_count"][pid] = clean_sacks
-            cx = state["person_prev_cx"].get(pid, 0)
             logger.debug(
-                "PEAK UPDATE P#%d  peak=%d  cx=%d  frame=%d",
-                pid, clean_sacks, cx, fn,
+                "PEAK UPDATE P#%d  peak=%d  proj=%s  frame=%d",
+                pid, clean_sacks,
+                person_projection(door, state, pid), fn,
             )
-
-
-def _get_person_cy(pid: int, state) -> int:
-    """Return cy from person_boxes, or 0."""
-    box = state["person_boxes"].get(pid)
-    if box is None:
-        return 0
-    x1, y1, x2, y2 = box
-    return (y1 + y2) // 2

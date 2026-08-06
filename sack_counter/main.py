@@ -28,22 +28,19 @@ from collections import deque
 
 from .version import VERSION_TAG
 from .console import force_utf8_stdio
+from .session_log import session_log_path
+from .session_view import SessionView
 from .config import load_config, save_calibration
 from .model_classes import resolve_class_indices, unmatched_classes
 from .door_polygon import calibrate_door_polygon, DoorPolygon, _get_display_cap
-from .assignment import assign_sacks_hungarian
+from .detections import detection_conf_floor, parse_detections
 from .drawing import (
     draw_sack_boxes, draw_box_detections, draw_person_box, draw_hud,
     build_event_feed,
 )
-from .pipeline import PipelineSession, SackState
-from .pipeline.person_tracker import update_persons, timeout_persons
-from .pipeline.sack_tracker import update_sacks
-from .pipeline.counting import update_peak_counts
-from .pipeline.door_crossing import update_door_zone, check_door_reentry
+from .pipeline import PipelineSession
+from .pipeline.frame import advance_frame
 from .pipeline.reporter import print_report
-
-from ultralytics import YOLO
 
 
 def run(
@@ -68,11 +65,11 @@ def run(
         save_output: If True, writes annotated video to ``output_v23.mp4``.
         headless:    If True, suppresses the display window.
         config_path: Path to YAML or JSON config file.
-        frame_sink:  Optional ``fn(frame, session, frame_no, fps)`` called
-                     once per frame after the overlay is drawn.  Lets a
-                     host — the web console — stream the annotated frames
-                     without a display window.  The frame is the live
-                     buffer; copy it if you keep it.
+        frame_sink:  Optional ``fn(SessionView)`` called once per frame
+                     after the overlay is drawn.  Lets a host — the web
+                     console — stream the annotated frames without a
+                     display window.  ``view.frame`` is the live buffer;
+                     copy it if you keep it.
         should_stop: Optional ``fn() -> bool`` polled at the top of each
                      iteration.  Returning True ends the run as cleanly
                      as reaching the end of the video, so the caller gets
@@ -99,15 +96,16 @@ def run(
     print(f"{'='*62}\n")
 
     # ── Model + video source ──────────────────────────────────
+    # Imported here, not at module scope: importing this module should
+    # not drag in torch, so the pipeline stages stay testable on their own.
+    from ultralytics import YOLO
+
     model = YOLO(cfg["model_path"])
     print(f"Model classes: {model.names}")
     # Resolve by name rather than assuming 0=person/1=sack/2=box.  The
     # hardcoded indices were recorded only in a config comment, so a model
     # with a different class order counted the wrong objects silently.
-    cls_idx      = resolve_class_indices(model.names)
-    CLS_PERSON   = cls_idx["person"]
-    CLS_SACK     = cls_idx["sack"]
-    CLS_BOX      = cls_idx["box"]
+    cls_idx = resolve_class_indices(model.names)
 
     # A positional fallback is the one startup condition that can make
     # every number on screen wrong, so the console says so in plain words
@@ -145,7 +143,6 @@ def run(
             points=[tuple(p) for p in door_points],
             room_point=tuple(room_point) if room_point else None,
         )
-        cfg.setdefault("door_approach_side", "right")
     else:
         door = calibrate_door_polygon(cap, cfg)
         # Persist the calibration so --headless can actually replay it.
@@ -162,8 +159,7 @@ def run(
         src_fps=src_fps,
     )
     session.set_door(door)
-    state  = session.state
-    logger = session.logger
+    state = session.state
 
     # DEBUG: sanity-check door orientation before running.
     print(f"[DOOR CHECK] room_point={door.room_point}  "
@@ -237,207 +233,21 @@ def run(
         t_prev = now
         fps    = float(np.mean(fps_ring))
 
-        # ── 1. Detection ──────────────────────────────────────
+        # ── Detect, then run every pipeline stage ─────────────
         results = model.track(
             frame,
             persist=True,
-            conf=min(cfg["conf_sack"], cfg["conf_person"], cfg["conf_box"]),
+            conf=detection_conf_floor(cfg),
             verbose=False,
         )
-        raw_persons: list[tuple] = []
-        raw_sacks:   list[tuple] = []
-        raw_boxes:   list[tuple] = []
-
-        if results and results[0].boxes is not None:
-            for box in results[0].boxes:
-                if box.id is None:
-                    continue
-                cls = int(box.cls[0])
-                sc  = float(box.conf[0])
-                tid = int(box.id[0])
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                if cls == CLS_PERSON and sc >= cfg["conf_person"]:
-                    raw_persons.append((tid, x1, y1, x2, y2, sc))
-                elif cls == CLS_SACK and sc >= cfg["conf_sack"]:
-                    raw_sacks.append((tid, x1, y1, x2, y2,
-                                      (x1+x2)//2, (y1+y2)//2, sc))
-                elif cls == CLS_BOX and sc >= cfg["conf_box"]:
-                    raw_boxes.append((tid, x1, y1, x2, y2, sc))
-
-        state["raw_sacks"] = raw_sacks
-        state["raw_boxes"] = raw_boxes
-
-        # ── 2. Person tracking ────────────────────────────────
-        reid_before = len(session.relinker.reid_events)
-        active_pids = update_persons(raw_persons, session, fn)
-        timeout_persons(active_pids, session, fn)
-        session.relinker.expire_lost(fn)
-        # Feed relinks to analytics.  record_reid_event() existed but was
-        # never called, so analytics.pipeline.reid_events reported 0 in the
-        # same JSON file whose top-level reid_events list was populated.
-        for _ in range(len(session.relinker.reid_events) - reid_before):
-            session.analytics.record_reid_event()
-
-        # ── 3. Sack tracking + ground suppression ─────────────
-        update_sacks(raw_sacks, session, fn)
-
-        # ── 4. Assignment (exclude ground sacks) ──────────────
-        confirmed_sack_list = [
-            s for s in raw_sacks
-            if s[0] in state["confirmed_sacks"]
-            and s[0] not in state["ground_sacks"]
-        ]
-
-        # Release stale ownership for sacks whose owner passed the gate
-        for (sid, *_) in confirmed_sack_list:
-            current_owner = session.ownership_mem.get(sid)
-            if current_owner is not None and current_owner in state["persons_past_door"]:
-                session.ownership_mem.clear(sid)
-                state["sack_carrier_stamp"].pop(sid, None)
-                logger.debug(
-                    "STALE-OWNER release: sack#%d owner=P#%d cleared  frame=%d",
-                    sid, current_owner, fn,
-                )
-
-        active_persons = {
-            pid: box for pid, box in state["person_boxes"].items()
-            if pid in state["confirmed_persons"]
-
-        }
-
-        sack_owner, sack_scores, person_load, assign_stats = assign_sacks_hungarian(
-            confirmed_sack_list, active_persons,
-            session.motion_tracker, session.ownership_mem, cfg,
-            sack_embeddings=state["sack_embeddings"],
-            person_emb_fn=lambda pid: state["person_embeddings"].get(pid),
-            persons_past_gate=state["persons_past_door"],   # v21: exclude past-door persons
-        )
-        state["sack_owner"]  = sack_owner
-        state["sack_scores"] = sack_scores
-        state["person_load"] = person_load
-
-        # Clean dicts: active sacks only (removes stale ghost-carried entries)
-        _active_sids      = {s[0] for s in confirmed_sack_list}
-        sack_owner_clean  = {s: p for s, p in sack_owner.items()  if s in _active_sids}
-        sack_scores_clean = {s: v for s, v in sack_scores.items() if s in _active_sids}
-
-        # Record ownership confidence + anomalies
-        for sid, score in sack_scores.items():
-            session.conf_tracker.record_ownership(sid, score)
-            if score < cfg["ownership_anomaly_threshold"]:
-                state["anomaly_log"].append({
-                    "frame": fn, "type": "low_owner_confidence",
-                    "sack_id": sid, "person_id": sack_owner.get(sid),
-                    "ownership_confidence": round(score, 3),
-                })
-                state["n_anomalies"] = len(state["anomaly_log"])
-                logger.warning(
-                    "LOW OWNERSHIP CONF sack#%d -> P#%s score=%.3f  frame=%d",
-                    sid, sack_owner.get(sid), score, fn,
-                )
-                session.analytics.record_anomaly()
-
-        # ── 5. Box pipeline ───────────────────────────────────
-        box_owner = session.box_pipeline.update(
-            raw_boxes, active_persons, fn, src_fps, cfg=cfg,
-        )
-
-        # Box ground suppression (visual only)
-        active_bids = {b[0] for b in raw_boxes}
-        for (bid, *_) in raw_boxes:
-            if box_owner.get(bid) is None:
-                state["ground_boxes"].add(bid)
-            else:
-                state["ground_boxes"].discard(bid)
-        state["ground_boxes"] &= active_bids
-
-        # ── 6. Peak counts ────────────────────────────────────
-        if cfg.get("peak_count_enabled", True):
-            update_peak_counts(
-                confirmed_sack_list, session, fn,
-                sack_owner_clean, sack_scores_clean,
-            )
-
-        
-        # ── 7a. Re-entry reset ────────────────────────────────
-        check_door_reentry(session, fn)
-
-        # ── 7b. Door crossing commits ─────────────────────────
-        # Pass active_pids so update_door_zone can distinguish a genuinely
-        # missing person from one whose stale person_prev_cx looks valid.
-        crossings_before = len(state["delivery_log"])
-        update_door_zone(session, fn, active_pids)
-        n_crossings = len(state["delivery_log"]) - crossings_before
-
-        
-        # ── 8. Peak state cleanup (persons long past door) ────
-        # FIX: this used to compare raw pid_cx against door_cx using a
-        # left/right heuristic (door_approach_side) — leftover from
-        # before the v22 normal-vector rewrite. Every other geometry
-        # check in the pipeline (crossing, window, direction) uses
-        # door.project_onto_normal(); this one didn't, so for any door
-        # that isn't near-perfectly horizontal/vertical the threshold
-        # didn't correspond to the real corridor/room boundary, and could
-        # wipe person_peak_count for a carrier who was still mid-approach
-        # (this loop had no persons_past_door guard at all).
-        if cfg.get("peak_count_enabled", True):
-            stale_margin = cfg["peak_freeze_px"] * 2
-            for pid in list(state["person_peak_count"].keys()):
-                if pid not in state["persons_past_door"]:
-                    continue
-                pid_cx = state["person_prev_cx"].get(pid)
-                if pid_cx is None:
-                    continue
-                pid_cy = state["person_boxes"].get(pid)
-                cy_val = ((pid_cy[1] + pid_cy[3]) // 2) if pid_cy else 0
-                proj = session.door.project_onto_normal(pid_cx, cy_val)
-                if proj > stale_margin:
-                    state["person_peak_count"].pop(pid, None)
-                    state["person_approach_fn"].pop(pid, None)
-
-        # ── 9. Expire stale orphaned peaks (BUG2) ─────────────
-        expired = [pid for pid, rec in state["orphaned_peaks"].items()
-                   if fn > rec["expires_at"]]
-        for pid in expired:
-            state["orphaned_peaks"].pop(pid)
-            logger.debug("Orphaned peak P#%d expired without commit  frame=%d", pid, fn)
-        if expired:
-            active_orphan_pids = set(state["orphaned_peaks"].keys())
-            state["orphaned_sack_owner"] = {
-                s: p for s, p in state["orphaned_sack_owner"].items()
-                if p in active_orphan_pids
-            }
-
-        # ── 10. Advance state machine for carried sacks ───────
-        door_cx_sm = session.door.centroid[0]
-        approach_side_sm = cfg.get("door_approach_side", "right")
-        if approach_side_sm == "right":
-            approach_open = door_cx_sm + cfg["peak_window_px"]
-        else:
-            approach_open = door_cx_sm - cfg["peak_window_px"]
-        for sid, owner_pid in sack_owner_clean.items():
-            rec = session.sack_sm.get(sid)
-            if rec is None:
-                continue
-            if rec.state in (SackState.CONFIRMED, SackState.PICKED_UP):
-                rec.transition(SackState.CARRIED, fn)
-            if rec.state == SackState.CARRIED:
-                pid_cx = state["person_prev_cx"].get(owner_pid, 0)
-                if pid_cx <= approach_open:
-                    rec.transition(SackState.APPROACHING, fn)
-
-        # ── 11. Draw ──────────────────────────────────────────
+        detections = parse_detections(results, cls_idx, cfg)
+        outcome    = advance_frame(session, detections, fn, src_fps)
+        box_owner  = outcome["box_owner"]
+        # ── Draw ──────────────────────────────────────────────
         _elapsed = int(now - t_start)
         _draw_frame(
             frame, session, box_owner, fps, fn,
-            frame_stats={
-                "raw":       len(raw_sacks),
-                "boxes":     len(raw_boxes),
-                "still":     assign_stats.get("still", 0),
-                "assigned":  assign_stats.get("assigned", 0),
-                "crossings": n_crossings,
-                "ghosts":    len(list(session.ghost_sacks.iter_ghosts())),
-            },
+            frame_stats=outcome["stats"],
             warning=ui_warning,
             elapsed=f"{_elapsed // 60}:{_elapsed % 60:02d}",
             src_fps=src_fps,
@@ -447,7 +257,8 @@ def run(
             out.write(frame)
 
         if frame_sink is not None:
-            frame_sink(frame, session, fn, fps)
+            frame_sink(SessionView.for_entry(frame, session, fn, fps,
+                                             warning=ui_warning))
 
         if not headless:
             disp_frame = cv2.resize(frame, (disp_w, disp_h)) if disp_scale != 1.0 else frame
@@ -478,7 +289,9 @@ def run(
         analytics_summary     = analytics_summary,
     )
 
-    log_path = f"delivery_log_{VERSION_TAG}.json"
+    # Timestamped, not a constant name: a run must not overwrite the record
+    # of the run before it.
+    log_path = session_log_path("delivery_log")
     payload = {
         # Recorded so the History screen can say which video a run was of;
         # the log used to carry only the numbers, not what they were of.
@@ -545,7 +358,6 @@ def _draw_frame(
         frame,
         count=state["total_sacks_counted"],
         label="DOOR",
-        candidates=state.get("door_candidates"),
         show_debug=True,
     )
 
