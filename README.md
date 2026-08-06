@@ -56,8 +56,14 @@ source .venv/bin/activate
 # Windows (PowerShell)
 .\.venv\Scripts\Activate.ps1
 
-pip install -r requirements.txt
+pip install -e .            # pipeline only
+pip install -e ".[web]"     # plus the browser console
+pip install -e ".[dev]"     # plus the test tooling
 ```
+
+Installing gives you a `sack-counter` command that works from any
+directory. `pip install -r requirements.txt` still works on a checkout
+if you would rather not install the package.
 
 ### Model weights
 
@@ -87,7 +93,15 @@ confidence ~0.10). If `exit_model_path` is unset it falls back to
 
 ## Usage
 
+Two front ends over the same pipeline. The browser console is the
+easier one; the CLI is what you want for scripted and headless runs.
+
 ```bash
+sack-counter --web             # browser console at http://127.0.0.1:8000
+sack-counter <source> [options]
+
+# from a checkout, without installing:
+python run.py --web
 python run.py <source> [options]
 ```
 
@@ -103,15 +117,31 @@ python run.py <source> [options]
 | `--headless` | No display window; requires a saved calibration. |
 | `--config PATH` | YAML or JSON config file. |
 | `--use-door-crossing` | Exit mode: enable door crossing as a secondary cross-check. |
+| `--web` | Serve the browser console instead of counting here. |
+| `--host` / `--port` | Console bind address and port (default `127.0.0.1:8000`). |
 
 Examples:
 
 ```bash
-python run.py video.mp4                      # prompts for mode
-python run.py video.mp4 --mode exit
-python run.py video.mp4 --mode enter --save
-python run.py webcam --mode exit
+sack-counter video.mp4                      # prompts for mode
+sack-counter video.mp4 --mode exit
+sack-counter video.mp4 --mode enter --save
+sack-counter webcam --mode exit
 ```
+
+### Web console
+
+```bash
+sack-counter --web
+```
+
+Six screens over the same pipeline: **Live** (annotated frames, worker
+meters, an activity feed), **Setup**, **Calibrate** (click the doorway
+on a real frame), **Report**, **History**, and **Detection check**.
+
+It binds to `127.0.0.1` deliberately. The console has no authentication
+and can start a session that opens a camera, so it is local-only until
+you pass `--host` explicitly — and it says so at startup when you do.
 
 ### Calibration
 
@@ -156,10 +186,13 @@ annotated sample frames to `diagnostic_frames/`.
 
 | File | Contents |
 |---|---|
-| `delivery_log_v23.json` | Enter mode: totals, per-delivery events, anomalies, analytics |
-| `exit_log_<timestamp>.json` | Exit mode: totals, exit events, discrepancy flags |
+| `delivery_log_v23_<timestamp>.json` | Enter mode: totals, per-delivery events, anomalies, analytics |
+| `exit_log_v23_<timestamp>.json` | Exit mode: totals, exit events, discrepancy flags |
 | `sack_counter.log` | Full debug trace (per-frame stamping, peaks, commits) |
 | `output_v23.mp4` | Annotated video, with `--save` |
+
+Both logs are timestamped, so a session never overwrites the one before
+it and every run shows up in the console's **History** screen.
 
 ---
 
@@ -169,9 +202,14 @@ annotated sample frames to `diagnostic_frames/`.
 pytest
 ```
 
-The suite is GPU-free and needs no video or model — it drives the
-pipeline logic on synthetic state. `tests/test_regressions.py` pins the
-specific bugs found in past code reviews; keep those passing.
+The suite is GPU-free and needs no weights or footage. Unit tests drive
+the pipeline on synthetic state; `tests/test_end_to_end.py` runs a whole
+session — loop, report and log — against a generated video and a stub
+detector, so the seams between stages are covered too.
+
+`tests/test_regressions.py` pins the specific bugs found in past code
+reviews; keep those passing. CI runs the suite and `ruff` on every push
+and pull request.
 
 ---
 
@@ -179,12 +217,17 @@ specific bugs found in past code reviews; keep those passing.
 
 ```text
 sack-counter-2026/
+├── pyproject.toml            # Package metadata, extras, ruff + pytest config
 ├── config.yaml               # All tunables
 ├── calibration.yaml          # Written by calibration (gitignored)
-├── run.py                    # CLI entry point
+├── run.py                    # From-checkout shortcut to sack_counter.cli
 ├── diagnose_sacks.py         # Raw-detection diagnostic
 ├── sack_counter/
+│   ├── cli.py                # Command line (installed as `sack-counter`)
 │   ├── main.py               # Enter-mode video loop
+│   ├── detections.py         # Tracker output -> pipeline tuples
+│   ├── session_view.py       # What a host sees of a running session
+│   ├── session_log.py        # Timestamped log naming, both modes
 │   ├── config.py             # Config loader + DEFAULT_CFG
 │   ├── version.py            # Single source of truth for the version
 │   ├── model_classes.py      # Resolve YOLO class indices by name
@@ -193,9 +236,14 @@ sack-counter-2026/
 │   ├── embedder.py           # Appearance embeddings (ReID)
 │   ├── trackers.py           # Motion, ReID, ownership, ghost sacks
 │   ├── assignment.py         # Hungarian sack-to-person assignment
+│   ├── theme.py              # Design tokens + OpenCV drawing primitives
+│   ├── drawing.py            # The on-frame console overlay
 │   ├── pipeline/             # Enter-mode per-frame stages
 │   │   ├── orchestrator.py   # PipelineSession — owns all components
 │   │   ├── state.py          # Typed state container
+│   │   ├── field_view.py     # Flat dict access, shared by both containers
+│   │   ├── geometry.py       # Where a person is, relative to the door
+│   │   ├── frame.py          # One frame through every stage, in order
 │   │   ├── person_tracker.py
 │   │   ├── sack_tracker.py
 │   │   ├── counting.py       # Peak counting + carrier stamping
@@ -204,6 +252,13 @@ sack-counter-2026/
 │   │   ├── ground_memory.py
 │   │   ├── analytics.py
 │   │   └── reporter.py
+│   ├── web/                  # Browser console (optional extra)
+│   │   ├── app.py            # Routes
+│   │   ├── session.py        # Runs a session in a worker thread
+│   │   ├── history.py        # Reads past session logs
+│   │   ├── diagnostics.py    # Detection check
+│   │   ├── templates/
+│   │   └── static/
 │   └── exit/                 # Exit-mode sub-pipeline
 │       ├── exit_main.py
 │       ├── exit_tracker.py

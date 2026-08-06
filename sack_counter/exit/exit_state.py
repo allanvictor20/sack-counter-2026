@@ -14,7 +14,8 @@ ExitPipelineState — top-level container with dict-like interface
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+
+from ..pipeline.field_view import FieldView
 
 
 # ── Sub-group dataclasses ─────────────────────────────────────
@@ -134,55 +135,27 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
 
 
 @dataclass
-class ExitPipelineState:
+class ExitPipelineState(FieldView):
     """
     Top-level state container.
 
-    Exposes a dict-like interface (``state["key"]``) so callers
-    do not need to know about the sub-group structure.
+    Exposes a dict-like interface (``state["key"]``) so callers do not
+    need to know about the sub-group structure.  The interface is
+    :class:`FieldView`, shared with the entry-mode container so the two
+    modes cannot drift apart again.
+
+    This used to keep an ``_extra`` overflow dict for unmapped keys,
+    which meant a misspelled field silently became a new one and the
+    correct name kept reading its default forever.  Unknown keys now
+    raise, at the assignment that made the mistake.
     """
 
     sacks:  ExitSackState  = field(default_factory=ExitSackState)
     counts: ExitCountState = field(default_factory=ExitCountState)
 
-    # Overflow dict for keys not in _FIELD_MAP
-    _extra: dict = field(default_factory=dict)
-
-    def _resolve(self, key: str):
-        """Return (object, attr_name) for *key*, or (None, None) if not mapped."""
-        if key in _FIELD_MAP:
-            group_attr, field_attr = _FIELD_MAP[key]
-            return getattr(self, group_attr), field_attr
-        return None, None
-
-    def __getitem__(self, key: str) -> Any:
-        obj, attr = self._resolve(key)
-        if obj is not None:
-            return getattr(obj, attr)
-        if key in self._extra:
-            return self._extra[key]
-        raise KeyError(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        obj, attr = self._resolve(key)
-        if obj is not None:
-            setattr(obj, attr, value)
-        else:
-            self._extra[key] = value
-
-    def __contains__(self, key: str) -> bool:
-        if key in _FIELD_MAP:
-            return True
-        return key in self._extra
-
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
+    _FIELDS = _FIELD_MAP
 
     def reset(self) -> None:
         """Reset all state to initial values (for unit tests)."""
         self.sacks  = ExitSackState()
         self.counts = ExitCountState()
-        self._extra = {}

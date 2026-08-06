@@ -42,9 +42,15 @@ class TestExitPipelineStateDictInterface:
     def test_get_missing_key_returns_default(self, state):
         assert state.get("nonexistent_key", 99) == 99
 
-    def test_extra_key_roundtrip(self, state):
-        state["my_custom_key"] = "hello"
-        assert state["my_custom_key"] == "hello"
+    def test_writing_an_unknown_key_raises(self, state):
+        """
+        Unmapped keys used to land in an ``_extra`` overflow dict, so a
+        misspelled field silently became a new one while the correctly
+        spelled field kept reading its default forever.  Writing one is
+        now an error at the assignment that made the mistake.
+        """
+        with pytest.raises(KeyError):
+            state["landing_pekk_count"] = 3
 
     def test_missing_key_raises(self, state):
         with pytest.raises(KeyError):
@@ -53,7 +59,6 @@ class TestExitPipelineStateDictInterface:
     def test_reset_clears_all(self, state):
         state["total_sacks_out"] = 10
         state["confirmed_sacks"].add(1)
-        state["my_custom_key"] = "data"
         state.reset()
         assert state["total_sacks_out"] == 0
         assert len(state["confirmed_sacks"]) == 0

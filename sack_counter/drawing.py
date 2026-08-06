@@ -25,22 +25,17 @@ nothing and mutates nothing.
 """
 
 import cv2
-import numpy as np
 from datetime import datetime
 
 from . import theme as T
 from .colors import (
     C_PERSON, C_SACK, C_SACK_ST, C_OWNED,
-    C_GHOST, C_LINE_A, C_LINE_B, C_COUNTED,
-    C_HUD_BG, C_ANOMALY, C_REID, C_BOX,
+    C_GHOST, C_COUNTED, C_ANOMALY, C_REID, C_BOX,
     C_LOW_CONF, C_MED_CONF,
 )
 from .version import VERSION_TAG as _VERSION_TAG
 from .confidence import ConfidenceTracker, confidence_class
 from .trackers import SackMotionTracker, GhostSacks
-
-# Muted grey used for ground-suppressed sacks
-_C_GROUND = T.NEUTRAL_600
 
 # Opacity of the extrapolated-ghost overlay.  Deliberately faint: ghosts
 # are a prediction, not a detection, and must be visually distinguishable

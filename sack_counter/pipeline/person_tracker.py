@@ -47,7 +47,6 @@ def update_persons(
     state          = session.state
     cfg            = session.cfg
     relinker       = session.relinker
-    ownership_mem  = session.ownership_mem
     embedder       = session.embedder
     confirm_frames = session.confirm_frames
     logger         = session.logger

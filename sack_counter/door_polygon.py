@@ -13,7 +13,6 @@ from __future__ import annotations
 import numpy as np
 import cv2
 from dataclasses import dataclass, field
-from typing import Optional
 
 from . import theme as T
 
@@ -277,7 +276,6 @@ class DoorPolygon:
         thickness: int | None = None,
         label: str = "DOOR",
         count: int = 0,
-        candidates: dict = None,
         show_debug: bool = True,
     ):
         """
@@ -295,7 +293,6 @@ class DoorPolygon:
                          scaled to the frame.
             label      : Text label drawn at centroid.
             count      : Current delivery count shown next to label.
-            candidates : dict[pid, DoorCandidateState] for debug overlay.
             show_debug : If True, draw normal arrow and side labels.
         """
         u = T.unit(frame)
@@ -358,30 +355,6 @@ class DoorPolygon:
         T.text(frame, "CORRIDOR", self.corridor_midpt[0] - T.px(35, u),
                self.corridor_midpt[1] + T.px(18, u), side_scale,
                T.NEUTRAL_300, 1, T.FONT_BODY, tracking=side_track)
-
-        # Candidate states
-        if candidates:
-            for pid, cand in candidates.items():
-                from .pipeline.door_crossing import DoorState
-                state_lbl = cand.door_state.name if hasattr(cand, "door_state") else "?"
-                color_map = {
-                    "CORRIDOR":     (180, 180, 180),
-                    "APPROACHING":  (0, 200, 255),
-                    "IN_DOOR":      (0, 255, 200),
-                    "DISAPPEARING": (0, 140, 255),
-                    "COUNTED":      (0, 255, 0),
-                    "ABORTED":      (0, 0, 200),
-                }
-                c = color_map.get(state_lbl, (200, 200, 200))
-                lx = cand.last_seen_cx
-                ly = cand.last_seen_cy
-                if lx > 0 or ly > 0:
-                    cv2.circle(frame, (lx, ly), 6, c, 2)
-                    cv2.putText(
-                        frame, f"P#{pid}:{state_lbl[:3]}",
-                        (lx + 8, ly - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, c, 1,
-                    )
 
 
 # ── Calibration ────────────────────────────────────────────────
@@ -582,8 +555,6 @@ def calibrate_door_polygon(cap, cfg: dict = None) -> "DoorPolygon":
     cv2.moveWindow(WIN, 0, 0)
     cv2.setMouseCallback(WIN, _mouse)
 
-    phase = 1  # 1 = clicking corners, 2 = clicking room point
-
     while True:
         display = clone.copy()
 
@@ -624,8 +595,5 @@ def calibrate_door_polygon(cap, cfg: dict = None) -> "DoorPolygon":
     if cfg is not None:
         cfg["door_polygon_points"] = door.points
         cfg["door_room_point"]     = room_point
-        # approach_side kept for peak_window compat (left/right of centroid)
-        nx, ny = door.normal_vec
-        cfg["door_approach_side"] = "right" if nx < 0 else "left"
 
     return door

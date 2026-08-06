@@ -29,6 +29,11 @@ screenshot_*.jpg
 exit_screenshot_*.jpg
 diagnostic_frames/
 
+# Packaging
+build/
+dist/
+*.egg-info/
+
 # OS / editor
 .DS_Store
 Thumbs.db

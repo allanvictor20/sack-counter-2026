@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 import cv2
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from .. import theme as T
 from ..door_polygon import _get_display_cap

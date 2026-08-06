@@ -1,23 +1,30 @@
-# Sack Counter v18 — Python dependencies
-# Tested with Python 3.10+
+# Runtime dependencies for the counting pipeline.
+#
+# pyproject.toml is the source of truth; this file mirrors it so that a
+# plain `pip install -r requirements.txt` still works on a checkout.
+#
+#   pip install -e .            pipeline only
+#   pip install -e ".[web]"     plus the browser console
+#   pip install -e ".[dev]"     plus the test tooling
 
-# Computer vision & YOLO
+# Detection and tracking
 ultralytics>=8.0.0
-opencv-python>=4.8.0
-
-# Deep learning / embedder
 torch>=2.0.0
 torchvision>=0.15.0
+
+# Vision / imaging
+opencv-python>=4.8.0
 Pillow>=9.5.0
 
 # Numerical / optimisation
 numpy>=1.24.0
 scipy>=1.10.0
 
-# YAML config support (optional but recommended)
+# YAML config support
 pyyaml>=6.0
 
-# Web console (sack_counter.web) — not needed for the CLI
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-jinja2>=3.1.0
+# Web console — optional, not needed for the CLI or a headless run.
+# Install with: pip install -e ".[web]"
+# fastapi>=0.110.0
+# uvicorn[standard]>=0.27.0
+# jinja2>=3.1.0

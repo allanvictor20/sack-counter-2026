@@ -383,8 +383,9 @@ async def api_diagnostics_start(request: Request):
     raw_cutoff = body.get("cutoff")
     try:
         cutoff = float(raw_cutoff) if raw_cutoff not in (None, "") else None
-    except (TypeError, ValueError):
-        raise HTTPException(400, "cutoff must be a number between 0 and 1.")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            400, "cutoff must be a number between 0 and 1.") from exc
     if cutoff is None:
         cutoff = float(cfg.get("conf_sack", 0.35))
     elif cutoff <= 0 or cutoff > 1:

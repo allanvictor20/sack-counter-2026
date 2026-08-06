@@ -14,7 +14,7 @@ the console reads as one surface because it does not have one.
 
 from .theme import (
     ACCENT, ACCENT_400, ACCENT_500,
-    INK, PAPER,
+    PAPER,
     NEUTRAL_300, NEUTRAL_500, NEUTRAL_600,
 )
 
@@ -23,10 +23,7 @@ C_SACK     = NEUTRAL_300    # detected sack, no owner
 C_SACK_ST  = NEUTRAL_600    # sack sitting still
 C_OWNED    = ACCENT         # sack assigned to a worker, high confidence
 C_GHOST    = NEUTRAL_500    # extrapolated position, not a detection
-C_LINE_A   = ACCENT         # legacy gate lines (kept for older overlays)
-C_LINE_B   = NEUTRAL_500
 C_COUNTED  = ACCENT         # worker who has delivered
-C_HUD_BG   = INK            # console scrim
 C_ANOMALY  = ACCENT_500     # needs a look
 C_REID     = ACCENT_400     # track was lost and recognised again
 C_BOX      = PAPER          # box detection — secondary to sacks

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import json
 import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ..session_log import session_log_path
 
 if TYPE_CHECKING:
     from .exit_state import ExitPipelineState
-    from .exit_landing import reconcile_counts
 
 
 def print_exit_report(
@@ -46,7 +46,7 @@ def print_exit_report(
 
     sep = "=" * 60
     print(f"\n{sep}")
-    print(f"  EXIT COUNTER — SESSION REPORT")
+    print("  EXIT COUNTER — SESSION REPORT")
     print(f"  Source  : {source}")
     print(f"  Frames  : {total_frames}  ({duration_s:.1f} s @ {src_fps:.1f} fps)")
     print(sep)
@@ -56,8 +56,8 @@ def print_exit_report(
         print(f"  Best estimate (reconciled)   : {best_count}")
     else:
         print(f"  Sacks exited (landing zone)  : {land_count}")
-        print(f"  (door-crossing disabled — landing zone is the sole counter;")
-        print(f"   pass --use-door-crossing to enable it as a cross-check)")
+        print("  (door-crossing disabled — landing zone is the sole counter;")
+        print("   pass --use-door-crossing to enable it as a cross-check)")
     print(sep)
 
     if use_door_crossing:
@@ -102,8 +102,7 @@ def save_exit_log(
     from .exit_landing import reconcile_counts as _reconcile
 
     if output_path is None:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"exit_log_{ts}.json"
+        output_path = session_log_path("exit_log")
 
     payload = {
         "source":             source,
