@@ -10,7 +10,6 @@ venv/
 env/
 
 # Model weights — large binaries, distributed out of band
-*.pt
 *.onnx
 *.engine
 
